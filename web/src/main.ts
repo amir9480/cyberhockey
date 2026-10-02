@@ -193,7 +193,7 @@ function peek(on: boolean) {
   peekTimer = null;
   document.body.classList.toggle('peek', on);
 }
-for (const el of [pitchInput, malletInput]) {
+for (const el of [pitchInput, malletInput, byId('roomMallet')]) {
   el.addEventListener('pointerdown', () => peek(true));
   for (const ev of ['pointerup', 'pointercancel', 'blur'] as const) el.addEventListener(ev, () => peek(false));
   el.addEventListener('keydown', () => {
@@ -598,6 +598,9 @@ byId('nameForm').addEventListener('submit', (e) => {
 
 byId('goSingle').addEventListener('click', () => {
   mode = 'sp';
+  // This game's own rules again: an online room may have replaced them.
+  setMalletScale(Number(malletInput.value));
+  setWinScore(Number(winInput.value));
   setPlayers(players); // a fresh game, and the table an online game may have replaced
   syncPlayersUrl();
   show('spSetup');

@@ -1,5 +1,6 @@
 import type { LeftReason, LobbyRoom, PauseEntry, SeatInfo, ServerMsg } from '@airhockey/shared/protocol';
-import { clampMalletScale, clampWinScore } from '@airhockey/shared/room';
+import { PALETTE_SIZE, clampMalletScale, clampWinScore } from '@airhockey/shared/room';
+import type { PlayerCount } from '@airhockey/shared/layout';
 import { PALETTE_HEX } from '../game/colors';
 import type { Countdown } from '../game/countdown';
 import type { Input } from '../game/input';
@@ -92,6 +93,8 @@ export class Multiplayer {
   private ticker: ReturnType<typeof setInterval> | null = null;
   private toastTimer: ReturnType<typeof setTimeout> | null = null;
   private createPublic = true;
+  /** What the room preview table was last built for (rebuilt only when it changes). */
+  private previewKey = '';
 
   private roomList = $('roomList');
   private lobbyNote = $('lobbyNote');
@@ -167,6 +170,7 @@ export class Multiplayer {
     this.wantedRoom = room;
     this.autoJoin = auto && !!room;
     this.room = null;
+    this.previewKey = ''; // single player may have rebuilt the table since
     document.body.classList.add('mp');
     this.setNote(this.lobbyNote, room ? 'Joining room…' : '');
     this.deps.setScreen('lobby');
@@ -288,6 +292,7 @@ export class Multiplayer {
   private onStart(m: StartMsg) {
     this.seats = m.seats;
     this.pings = [];
+    this.previewKey = '';
     this.showingResult = false;
     this.result.hidden = true;
     if (this.game) this.game.restart(m);
@@ -475,7 +480,9 @@ export class Multiplayer {
     });
     win.addEventListener('change', () => this.socket.send({ t: 'settings', winScore: Number(win.value) }));
     mallet.addEventListener('input', () => {
-      $<HTMLOutputElement>('roomMalletOut').value = `${Math.round(clampMalletScale(Number(mallet.value)) * 100)}%`;
+      const scale = clampMalletScale(Number(mallet.value));
+      $<HTMLOutputElement>('roomMalletOut').value = `${Math.round(scale * 100)}%`;
+      this.deps.view.setRoom({ malletScale: scale }); // preview at once; the room follows on release
     });
     mallet.addEventListener('change', () => this.socket.send({ t: 'settings', malletScale: Number(mallet.value) }));
     $('readyBtn').addEventListener('click', () => {
@@ -563,6 +570,7 @@ export class Multiplayer {
     $('roomMalletBox').setAttribute('aria-disabled', String(!canEdit));
     $<HTMLOutputElement>('roomWinOut').value = String(r.settings.winScore);
     $<HTMLOutputElement>('roomMalletOut').value = `${Math.round(r.settings.malletScale * 100)}%`;
+    this.preview(r);
 
     // Status line and action buttons.
     const ready = $('readyBtn') as HTMLButtonElement;
@@ -579,6 +587,25 @@ export class Multiplayer {
     start.disabled = !!block;
     if (isHost && !fresh && r.status === 'lobby') this.setNote(this.roomNote, block ?? 'Everyone is ready');
     else this.setNote(this.roomNote, '');
+  }
+
+  /**
+   * Behind the room screen: the table the game would start on now, seats in join order (the server seats players
+   * that way), this player at the bottom, the room's mallet size.
+   */
+  private preview(r: RoomMsg) {
+    if (this.active || this.showingResult) return;
+    const online = r.members.filter((m) => m.online).slice(0, 4);
+    const n = Math.min(4, Math.max(2, online.length)) as PlayerCount;
+    const colors = online.map((m) => m.color);
+    for (let c = 0; colors.length < n && c < PALETTE_SIZE; c++) if (!colors.includes(c)) colors.push(c); // empty seats
+    const local = Math.max(0, online.findIndex((m) => m.id === this.myId));
+    const key = `${n}|${local}|${colors.join(',')}`;
+    const view = this.deps.view;
+    if (key !== this.previewKey) {
+      this.previewKey = key;
+      view.setupNet(n, local, colors, r.settings);
+    } else view.setRoom(r.settings);
   }
 
   // --- game: pause, countdown, results --------------------------------------------
