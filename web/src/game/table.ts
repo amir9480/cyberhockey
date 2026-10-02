@@ -4,8 +4,8 @@ import railVert from '../shaders/rail.vert?raw';
 import railFrag from '../shaders/rail.frag?raw';
 import floorVert from '../shaders/floor.vert?raw';
 import floorFrag from '../shaders/floor.frag?raw';
-import type { PlayerCount, TableLayout, Vec2 } from './layout';
-import { buildLayout } from './layout';
+import type { PlayerCount, TableLayout, Vec2 } from '@airhockey/shared/layout';
+import { buildLayout } from '@airhockey/shared/layout';
 import { seatColor } from './colors';
 import type { WinUniforms } from './effects';
 

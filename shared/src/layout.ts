@@ -206,11 +206,17 @@ export function clampToSeat(layout: TableLayout, seat: number, p: Vec2, r: numbe
     planes.push({ n: normal, d: dot(normal, a) + wall });
   }
   let q = { x: p.x, y: p.y };
-  for (let k = 0; k < 4; k++) {
+  // Alternating projection onto the half-planes; far-off points in a narrow wedge need several passes.
+  for (let k = 0; k < 40; k++) {
+    let moved = false;
     for (const pl of planes) {
       const s = dot(pl.n, q) - pl.d - r;
-      if (s < 0) q = { x: q.x - pl.n.x * s, y: q.y - pl.n.y * s };
+      if (s < -1e-9) {
+        q = { x: q.x - pl.n.x * s, y: q.y - pl.n.y * s };
+        moved = true;
+      }
     }
+    if (!moved) break;
   }
   return q;
 }

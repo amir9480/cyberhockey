@@ -3,16 +3,18 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
-import type { PlayerCount, Vec2 } from './layout';
+import { buildLayout, type PlayerCount, type Vec2 } from '@airhockey/shared/layout';
+import { SimMallet } from '@airhockey/shared/mallet';
 import { createTable, WALL_HEIGHT, type Table } from './table';
 import { Mallet } from './mallet';
-import { DEFAULT_ROOM, clampMalletScale, clampWinScore, type RoomSettings } from './room';
-import type { PlayerCount as PC } from './layout';
+import { DEFAULT_ROOM, clampMalletScale, clampWinScore, type RoomSettings } from '@airhockey/shared/room';
 import { Scoreboard } from './scores';
 import { Ball } from './ball';
 import { Match } from './match';
-import type { Difficulty } from './ai';
+import type { Difficulty } from '@airhockey/shared/ai';
 import { WinEffect } from './effects';
+import { GameFx } from './gamefx';
+import { setSeatColors } from './colors';
 import { Sound } from './sound';
 
 const SIM_STEP = 1 / 240; // fixed simulation step, seconds
@@ -38,16 +40,30 @@ export class View {
   private scene = new THREE.Scene();
   private camera = new THREE.PerspectiveCamera(36, 1, 0.1, 200);
   private table: Table | null = null;
-  /** The local player's mallet (seat 0). */
+  /** The local player's mallet. */
   mallet: Mallet | null = null;
-  /** Other seats' mallets, driven by AI. */
-  private rivals: Mallet[] = [];
+  /** Every seat's mallet, by seat (the local one included). */
+  mallets: Mallet[] = [];
   ball: Ball | null = null;
+  /** Single-player game; null online, where the server simulates. */
   match: Match | null = null;
+  /** Online: routes game events to sound/effects. */
+  netFx: GameFx | null = null;
+  /** The seat shown at the bottom of the screen. */
+  private localSeat = 0;
+  /** Camera sits this far along this horizontal direction from the table centre. */
+  private camDir: Vec2 = { x: 0, y: 1 };
+  /** Called every frame before rendering (the online driver interpolates here). */
+  onFrame: ((dt: number, now: number) => void) | null = null;
+  /** Rendered frames per second, refreshed twice a second. */
+  fps = 0;
+  onFps: ((fps: number) => void) | null = null;
+  private fpsFrames = 0;
+  private fpsT = performance.now();
   /** False while paused: the game freezes but keeps rendering. */
   running = false;
   private difficulty: Difficulty = 'medium';
-  private players: PC = 2;
+  private players: PlayerCount = 2;
   /** Fired when someone reaches the winning score. */
   onGameOver: ((winner: number, scores: number[]) => void) | null = null;
   private fx = new WinEffect();
@@ -88,16 +104,61 @@ export class View {
 
   setPlayers(n: PlayerCount) {
     this.players = n;
+    this.teardown();
+    this.localSeat = 0;
+    this.fx.localSeat = 0;
+    this.table = createTable(n, this.fx.uniforms);
+    this.scene.add(this.table.group);
+    this.ball = new Ball();
+    this.ball.setScale(this.room.malletScale);
+    this.scene.add(this.ball.group);
+    this.scores = new Scoreboard(this.table.layout, this.fx.uniforms);
+    this.scene.add(this.scores.group);
+    this.match = new Match(this.ball, this.scores, this.difficulty, this.fx, this.sound, n, this.room.malletScale, this.room.winScore);
+    this.match.onOver = (w, s) => this.onGameOver?.(w, s);
+    this.addMallets(this.match.core.mallets);
+    this.finishSetup();
+  }
+
+  /**
+   * Online table: every seat's mallet is built, `mallet` is the local seat's and the camera looks from its
+   * side. `seatColors[seat]` is the palette index of each seat. Mallets other than the local one are placed
+   * by `NetGame` from snapshots.
+   */
+  setupNet(players: PlayerCount, localSeat: number, seatColors: number[], settings: RoomSettings, scores: number[] = []) {
+    this.players = players;
+    this.teardown();
+    setSeatColors(seatColors);
+    this.room = { ...settings };
+    this.localSeat = localSeat;
+    this.fx.localSeat = localSeat;
+    this.table = createTable(players, this.fx.uniforms);
+    this.scene.add(this.table.group);
+    this.ball = new Ball();
+    this.ball.setScale(settings.malletScale);
+    this.scene.add(this.ball.group);
+    this.scores = new Scoreboard(this.table.layout, this.fx.uniforms);
+    this.scene.add(this.scores.group);
+    scores.forEach((v, s) => this.scores?.setScore(s, v));
+    this.netFx = new GameFx(this.ball, this.scores, this.fx, this.sound, localSeat);
+    const layout = buildLayout(players);
+    this.addMallets(layout.seats.map((st) => new SimMallet(layout, st.index, settings.malletScale)));
+    this.finishSetup();
+  }
+
+  private teardown() {
     if (this.table) {
       this.scene.remove(this.table.group);
       this.table.dispose();
     }
-    for (const m of [this.mallet, ...this.rivals]) {
-      if (!m) continue;
+    for (const m of this.mallets) {
       this.scene.remove(m.group);
       m.dispose();
     }
-    this.rivals = [];
+    this.mallets = [];
+    this.mallet = null;
+    this.match = null;
+    this.netFx = null;
     if (this.ball) {
       this.scene.remove(this.ball.group);
       this.ball.dispose();
@@ -106,24 +167,19 @@ export class View {
       this.scene.remove(this.scores.group);
       this.scores.dispose();
     }
-    this.table = createTable(n, this.fx.uniforms);
-    this.scene.add(this.table.group);
-    const layout = this.table.layout;
-    this.mallet = new Mallet(layout, 0, this.fx.uniforms);
-    this.rivals = layout.seats.slice(1).map((st) => new Mallet(layout, st.index, this.fx.uniforms));
-    for (const m of [this.mallet, ...this.rivals]) {
-      m.setScale(this.room.malletScale);
-      this.scene.add(m.group);
-    }
-    this.ball = new Ball();
-    this.ball.setScale(this.room.malletScale);
-    this.scene.add(this.ball.group);
-    this.scores = new Scoreboard(layout, this.fx.uniforms);
-    this.scene.add(this.scores.group);
-    this.match = new Match(layout, this.ball, [this.mallet, ...this.rivals], this.scores, this.difficulty, this.fx, this.sound, this.room.malletScale);
-    this.match.setWinScore(this.room.winScore);
-    this.match.onOver = (w, s) => this.onGameOver?.(w, s);
-    this.table.setShadows(QUALITY[this.quality].shadows);
+  }
+
+  private addMallets(sims: SimMallet[]) {
+    this.mallets = sims.map((s) => new Mallet(s, this.fx.uniforms));
+    for (const m of this.mallets) this.scene.add(m.group);
+    this.mallet = this.mallets[this.localSeat];
+  }
+
+  private finishSetup() {
+    const layout = this.table!.layout;
+    const inward = layout.seats[this.localSeat].inward;
+    this.camDir = { x: -inward.x, y: -inward.y };
+    this.table!.setShadows(QUALITY[this.quality].shadows);
     this.fitCamera();
   }
 
@@ -133,10 +189,12 @@ export class View {
     this.room.malletScale = clampMalletScale(this.room.malletScale);
     this.room.winScore = clampWinScore(this.room.winScore);
     this.match?.setWinScore(this.room.winScore);
-    for (const m of [this.mallet, ...this.rivals]) m?.setScale(this.room.malletScale);
-    // The puck scales with the mallets.
+    // Mallets are resized by the match (single player); the puck scales with them.
+    if (this.match) {
+      this.match.setScale(this.room.malletScale);
+      for (const m of this.mallets) m.setScale(this.room.malletScale);
+    }
     this.ball?.setScale(this.room.malletScale);
-    this.match?.setScale(this.room.malletScale);
   }
 
   setQuality(q: Quality) {
@@ -185,7 +243,7 @@ export class View {
   private place(dist: number) {
     const y = Math.sin(this.pitch) * dist;
     const z = Math.cos(this.pitch) * dist;
-    this.camera.position.set(0, y, z);
+    this.camera.position.set(this.camDir.x * z, y, this.camDir.y * z);
     this.camera.lookAt(0, 0, 0);
     this.camera.updateMatrixWorld();
   }
@@ -269,8 +327,9 @@ export class View {
       this.acc += dt;
       let steps = 0;
       while (this.acc >= SIM_STEP && steps < MAX_STEPS) {
-        this.mallet?.update(SIM_STEP);
-        this.match?.update(SIM_STEP);
+        // Single player simulates everything; online only the local mallet is predicted.
+        if (this.match) this.match.update(SIM_STEP);
+        else this.mallet?.sim.update(SIM_STEP);
         this.acc -= SIM_STEP;
         steps++;
       }
@@ -279,16 +338,25 @@ export class View {
     } else {
       this.acc = 0;
     }
+    this.onFrame?.(dt, now);
+    for (const m of this.mallets) m.sync();
     this.scores?.update();
     if (this.ball) this.ball.update(dt);
     // Everything that casts a shadow from the goal lights.
     if (this.table && this.mallet && this.ball) {
-      const casters = [this.mallet, ...this.rivals].map((m) => ({ x: m.pos.x, y: m.pos.y, r: m.radius }));
+      const casters = this.mallets.map((m) => ({ x: m.pos.x, y: m.pos.y, r: m.radius }));
       // A hidden ball (between rounds) casts no shadow.
       if (this.ball.group.visible) casters.push({ x: this.ball.pos.x, y: this.ball.pos.y, r: this.ball.radius });
       this.table.setOccluders(casters);
     }
     this.composer.render();
+    this.fpsFrames++;
+    if (now - this.fpsT >= 500) {
+      this.fps = Math.round((this.fpsFrames * 1000) / (now - this.fpsT));
+      this.fpsFrames = 0;
+      this.fpsT = now;
+      this.onFps?.(this.fps);
+    }
     if (this.probe) this.sample(now);
   };
 

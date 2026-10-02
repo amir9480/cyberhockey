@@ -1,5 +1,5 @@
 import type { TableLayout, Vec2 } from './layout';
-import type { Mallet } from './mallet';
+import type { SimMallet } from './mallet';
 
 export const DIFFICULTIES = ['easy', 'medium', 'hard', 'expert'] as const;
 export type Difficulty = (typeof DIFFICULTIES)[number];
@@ -56,10 +56,10 @@ export class AiPlayer {
 
   constructor(
     private layout: TableLayout,
-    private mallet: Mallet,
+    private mallet: SimMallet,
     difficulty: Difficulty,
     /** Every mallet on the table, to read where the defenders stand. */
-    private all: Mallet[] = [],
+    private all: SimMallet[] = [],
   ) {
     this.virt = { ...mallet.pos };
     this.setDifficulty(difficulty);

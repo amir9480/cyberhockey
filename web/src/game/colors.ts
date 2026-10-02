@@ -18,6 +18,13 @@ export function assignSeatColors(mine: number) {
   for (let s = 1; s < SEAT_COLORS.length; s++) SEAT_COLORS[s].copy(PALETTE[rest[s - 1]]);
 }
 
+/** Online: seat `i` takes palette colour `indices[i]`. Rebuild the table/mallets after changing them. */
+export function setSeatColors(indices: number[]) {
+  indices.forEach((c, s) => {
+    if (s < SEAT_COLORS.length && PALETTE[c]) SEAT_COLORS[s].copy(PALETTE[c]);
+  });
+}
+
 /** Colour for a seat index. */
 export function seatColor(seat: number): THREE.Color {
   return SEAT_COLORS[seat % SEAT_COLORS.length];

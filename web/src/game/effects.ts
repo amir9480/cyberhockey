@@ -12,7 +12,7 @@ export interface WinUniforms {
   /** Red tint for the local player's own lights after they lose a round. */
   uLoseColor: { value: THREE.Color };
   uLoseAmt: { value: number };
-  /** Seat that gets the lose colour (the local player, seat 0) or -1. */
+  /** Seat that gets the lose colour (the local player) or -1. */
   uLoseSeat: { value: number };
   /** 0..1 flash pulse for the winner's segments and spotlight. */
   uFlash: { value: number };
@@ -42,15 +42,17 @@ export class WinEffect {
   };
   private hasWinner = false;
   private mainLost = false;
+  /** The seat this client plays; it gets the red "you lost" tint. */
+  localSeat = 0;
   private t = WIN_DURATION;
 
   /** `scorer` is null when nobody got the point; `loser` is the seat that conceded. */
   trigger(scorer: number | null, loser: number) {
     this.hasWinner = scorer !== null;
-    this.mainLost = loser === 0;
+    this.mainLost = loser === this.localSeat;
     if (scorer !== null) this.uniforms.uWinColor.value.copy(seatColor(scorer));
     this.uniforms.uWinSeat.value = scorer ?? -1;
-    this.uniforms.uLoseSeat.value = this.mainLost ? 0 : -1;
+    this.uniforms.uLoseSeat.value = this.mainLost ? this.localSeat : -1;
     this.t = 0;
     this.apply();
   }

@@ -11,15 +11,15 @@
       body.playing, body.playing canvas#view { cursor: none; }
 
       /* Pause menu: a scrolling overlay with one centred column that adapts to any screen width. */
-      #pause {
+      #pause, .screen {
         position: fixed; inset: 0; z-index: 10; display: flex; overflow-y: auto; -webkit-overflow-scrolling: touch;
         padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
         background: rgba(3, 1, 10, 0.62); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
         font: 600 13px/1.2 ui-sans-serif, system-ui, sans-serif; letter-spacing: 0.08em; color: #9d8fd0;
         -webkit-tap-highlight-color: transparent;
       }
-      #pause[hidden] { display: none; }
-      body.benchmarking #pause { backdrop-filter: none; -webkit-backdrop-filter: none; background: rgba(3, 1, 10, 0.9); }
+      #pause[hidden], .screen[hidden] { display: none; }
+      body.benchmarking #pause, body.benchmarking .screen { backdrop-filter: none; -webkit-backdrop-filter: none; background: rgba(3, 1, 10, 0.9); }
       .menu { margin: auto; width: 100%; max-width: 440px; display: flex; flex-direction: column; gap: 16px; }
       .group { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
       .cap { font-size: 11px; letter-spacing: 0.14em; color: #7d70a8; padding-left: 4px; }
@@ -39,17 +39,17 @@
       }
       .pills button[aria-pressed="true"]:hover { color: #05030a; }
 
-      #colors { display: flex; flex-wrap: wrap; justify-content: center; gap: 14px; padding: 12px 8px; }
-      #colors button {
+      #colors, .swatches { display: flex; flex-wrap: wrap; justify-content: center; gap: 14px; padding: 12px 8px; }
+      #colors button, .swatches.pills button {
         all: unset; box-sizing: border-box; flex: none; min-width: 0; padding: 0; width: 28px; height: 28px; border-radius: 50%; cursor: pointer;
         background: var(--c); opacity: 0.55; box-shadow: 0 0 6px var(--c);
         transition: opacity .2s, box-shadow .2s, transform .2s;
       }
-      #colors button:hover { opacity: 0.85; }
-      #colors button[aria-pressed="true"] {
+      #colors button:hover, .swatches.pills button:hover:not(:disabled) { opacity: 0.85; }
+      #colors button[aria-pressed="true"], .swatches.pills button[aria-pressed="true"] {
         opacity: 1; transform: scale(1.18); box-shadow: 0 0 10px var(--c), 0 0 24px var(--c), 0 0 38px var(--c);
       }
-      #colors button:focus-visible { outline: 2px solid #6ff; outline-offset: 3px; }
+      #colors button:focus-visible, .swatches.pills button:focus-visible { outline: 2px solid #6ff; outline-offset: 3px; }
 
       .slider { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 8px 12px; }
       .slider output { color: #fff; font-variant-numeric: tabular-nums; }
@@ -97,6 +97,79 @@
       #resume:disabled { opacity: 0.5; cursor: default; }
       .pills button:focus-visible, #resume:focus-visible, select:focus-visible { outline: 2px solid #6ff; outline-offset: 2px; }
 
+
+      /* Multiplayer: screens, HUD, banners */
+      [hidden] { display: none !important; }
+      .swatches.pills button:disabled { opacity: 0.15; cursor: not-allowed; box-shadow: none; }
+      .mp-only { display: none !important; }
+      body.mp .mp-only { display: flex !important; }
+      body.mp .sp-only { display: none !important; }
+      input[type="text"] {
+        width: 100%; box-sizing: border-box; padding: 12px 14px; border-radius: 10px; font: inherit; letter-spacing: inherit;
+        color: #fff; background: rgba(10, 6, 24, 0.75); border: 1px solid rgba(160, 120, 255, 0.35);
+      }
+      input[type="text"]:focus-visible { outline: 2px solid #6ff; outline-offset: 2px; }
+      h1.title { margin: 0 0 4px; text-align: center; font-size: clamp(26px, 8vw, 40px); letter-spacing: 0.14em; color: #fff; text-shadow: 0 0 12px #8c5aff, 0 0 32px #00e5ff; }
+      .primary {
+        all: unset; box-sizing: border-box; width: 100%; text-align: center; cursor: pointer;
+        padding: 16px 24px; border-radius: 999px; color: #fff; font-size: 15px; letter-spacing: 0.14em;
+        background: rgba(140, 90, 255, 0.28); border: 1px solid rgba(160, 120, 255, 0.5);
+        box-shadow: 0 0 22px rgba(120, 90, 255, 0.55); transition: background .2s, box-shadow .2s, opacity .2s;
+      }
+      .primary:hover { background: rgba(140, 90, 255, 0.45); box-shadow: 0 0 30px rgba(140, 100, 255, 0.8); }
+      .primary:disabled, .ghost:disabled { opacity: 0.4; cursor: default; box-shadow: none; }
+      .primary:focus-visible { outline: 2px solid #6ff; outline-offset: 2px; }
+      .note { text-align: center; color: #7d70a8; font-size: 12px; line-height: 1.4; min-height: 1.4em; }
+      .note.warn { color: #ff9a5c; }
+      .list { display: flex; flex-direction: column; gap: 6px; max-height: 38vh; overflow-y: auto; padding: 4px; border-radius: 14px; background: rgba(10, 6, 24, 0.55); border: 1px solid rgba(160, 120, 255, 0.25); }
+      .row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; background: rgba(140, 90, 255, 0.08); color: #fff; min-width: 0; }
+      .row .grow { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .row .dim { color: #7d70a8; font-size: 11px; white-space: nowrap; }
+      .row button { all: unset; cursor: pointer; padding: 7px 12px; border-radius: 999px; font-size: 11px; color: #fff; border: 1px solid rgba(160, 120, 255, 0.5); background: rgba(140, 90, 255, 0.25); }
+      .row button:hover { background: rgba(140, 90, 255, 0.5); }
+      .row button:focus-visible { outline: 2px solid #6ff; outline-offset: 2px; }
+      .empty { padding: 14px; text-align: center; color: #7d70a8; }
+      .dot { flex: none; width: 12px; height: 12px; border-radius: 50%; background: var(--c); box-shadow: 0 0 8px var(--c); }
+      .badge { font-size: 10px; padding: 3px 8px; border-radius: 999px; border: 1px solid currentColor; }
+      .badge.ready { color: #39ff6a; }
+      .badge.off { color: #ff9a5c; }
+      .badge.you { color: #00e5ff; }
+      .badge.ai { color: #ffb400; }
+      .inline { display: flex; gap: 8px; align-items: stretch; }
+      .inline > * { flex: 1 1 0; min-width: 0; }
+      .roomid { display: flex; gap: 8px; align-items: center; }
+      .roomid code { flex: 1; padding: 11px 12px; border-radius: 10px; color: #fff; font-size: 15px; letter-spacing: 0.2em; background: rgba(10, 6, 24, 0.75); border: 1px solid rgba(160, 120, 255, 0.35); }
+      .roomid .ghost { width: auto; padding: 11px 16px; }
+      .slider[aria-disabled="true"] input { opacity: 0.5; }
+
+      #hud {
+        position: fixed; z-index: 5; top: max(8px, env(safe-area-inset-top)); left: max(10px, env(safe-area-inset-left)); display: none; pointer-events: none;
+        font: 600 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.06em; color: rgba(190, 255, 255, 0.85); text-shadow: 0 0 6px rgba(0, 229, 255, 0.6);
+      }
+      body.playing #hud { display: block; }
+      #countdown {
+        position: fixed; inset: 0; z-index: 6; display: flex; align-items: center; justify-content: center; pointer-events: none;
+        font: 800 clamp(96px, 28vw, 220px)/1 ui-sans-serif, system-ui, sans-serif; color: #fff; text-shadow: 0 0 18px #8c5aff, 0 0 48px #00e5ff, 0 0 90px #00e5ff;
+      }
+      #countdown[hidden], #banner[hidden], #hint[hidden], #toast[hidden] { display: none; }
+      #banner {
+        position: fixed; inset: 0; z-index: 15; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+        padding: 16px; box-sizing: border-box; text-align: center; background: rgba(3, 1, 10, 0.6); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+        font: 700 clamp(15px, 4vw, 22px)/1.3 ui-sans-serif, system-ui, sans-serif; letter-spacing: 0.14em; color: #fff; text-shadow: 0 0 14px #8c5aff;
+      }
+      #banner .btns { display: flex; flex-direction: column; gap: 10px; width: 100%; max-width: 280px; font-size: 13px; text-shadow: none; }
+      #banner .ghost { color: #fff; background: rgba(10, 6, 24, 0.7); }
+      body.playing.waiting, body.playing.waiting canvas#view { cursor: auto; }
+      #hint, #toast {
+        position: fixed; z-index: 16; left: 50%; transform: translateX(-50%); padding: 10px 18px; border-radius: 999px; max-width: calc(100vw - 32px); box-sizing: border-box; text-align: center;
+        font: 700 12px/1.2 ui-sans-serif, system-ui, sans-serif; letter-spacing: 0.14em; color: #fff; background: rgba(10, 6, 24, 0.85); border: 1px solid rgba(160, 120, 255, 0.5);
+      }
+      #hint { bottom: 18px; pointer-events: none; }
+      #toast { top: 18px; border-color: rgba(255, 154, 92, 0.7); }
+      #result .names { display: flex; flex-direction: column; gap: 6px; align-items: stretch; min-width: 200px; }
+      #result .names .row { background: rgba(140, 90, 255, 0.12); justify-content: space-between; }
+      #result .sub { color: #ff9a5c; font-size: 12px; }
+
       @media (max-width: 400px) {
         .pills button { padding: 10px 6px; letter-spacing: 0.04em; font-size: 12px; }
         .menu { gap: 12px; }
@@ -109,9 +182,100 @@
   </head>
   <body>
     <canvas id="view"></canvas>
+    <div id="hud"></div>
+    <div id="countdown" hidden></div>
+    <div id="banner" hidden>
+      <div id="bannerText"></div>
+      <div class="btns">
+        <button id="voteBtn" class="ghost" type="button" hidden></button>
+        <button id="joinPause" class="ghost" type="button">PAUSE TOO</button>
+      </div>
+    </div>
+    <div id="hint" hidden>CLICK TO ENTER FULLSCREEN</div>
+    <div id="toast" hidden></div>
+    <section id="home" class="screen">
+      <div class="menu">
+        <h1 class="title">NEON AIR HOCKEY</h1>
+        <div class="group">
+          <label class="cap" for="nameInput">YOUR NAME</label>
+          <input id="nameInput" type="text" maxlength="16" autocomplete="nickname" spellcheck="false" placeholder="Enter a name" />
+        </div>
+        <div id="homeNote" class="note"></div>
+        <button id="goSingle" class="primary" type="button">SINGLE PLAYER</button>
+        <button id="goMulti" class="primary" type="button">MULTIPLAYER</button>
+      </div>
+    </section>
+    <section id="lobby" class="screen" hidden>
+      <div class="menu">
+        <h1 class="title">MULTIPLAYER</h1>
+        <div class="group">
+          <div class="cap">PUBLIC ROOMS</div>
+          <div id="roomList" class="list"></div>
+        </div>
+        <div class="group">
+          <div class="cap">CREATE ROOM</div>
+          <div id="createVis" class="pills" role="group" aria-label="Visibility">
+            <button data-v="public" aria-pressed="true">PUBLIC</button>
+            <button data-v="private" aria-pressed="false">PRIVATE</button>
+          </div>
+          <button id="createRoom" class="primary" type="button">CREATE ROOM</button>
+        </div>
+        <div class="group">
+          <div class="cap">QUICK PLAY</div>
+          <div class="inline">
+            <button id="quick2" class="primary" type="button">2 PLAYERS</button>
+            <button id="quick4" class="primary" type="button">4 PLAYERS</button>
+          </div>
+        </div>
+        <div class="group">
+          <label class="cap" for="lobbyName">YOUR NAME</label>
+          <input id="lobbyName" type="text" maxlength="16" autocomplete="nickname" spellcheck="false" />
+        </div>
+        <div id="lobbyNote" class="note"></div>
+        <button id="lobbyBack" class="ghost" type="button">BACK</button>
+      </div>
+    </section>
+    <section id="room" class="screen" hidden>
+      <div class="menu">
+        <div class="group">
+          <div class="cap">ROOM</div>
+          <div class="roomid"><code id="roomId"></code><button id="copyLink" class="ghost" type="button">COPY LINK</button></div>
+        </div>
+        <div id="roomStatus" class="note"></div>
+        <div class="group">
+          <div class="cap">PLAYERS</div>
+          <div id="members" class="list"></div>
+        </div>
+        <div id="roomColorsBox" class="group">
+          <div class="cap">YOUR COLOR</div>
+          <div id="roomSwatches" class="pills swatches" role="group" aria-label="Your colour"></div>
+        </div>
+        <div id="roomVisBox" class="group">
+          <div class="cap">VISIBILITY</div>
+          <div id="roomVis" class="pills" role="group" aria-label="Visibility">
+            <button data-v="public" aria-pressed="false">PUBLIC</button>
+            <button data-v="private" aria-pressed="false">PRIVATE</button>
+          </div>
+        </div>
+        <label class="slider cap" id="roomWinBox">POINTS TO WIN
+          <output id="roomWinOut">10</output>
+          <input id="roomWin" type="range" min="10" max="100" step="1" value="10" />
+        </label>
+        <label class="slider cap" id="roomMalletBox">MALLET SIZE
+          <output id="roomMalletOut">100%</output>
+          <input id="roomMallet" type="range" min="0.6" max="1.6" step="0.05" value="1" />
+        </label>
+        <div id="roomNote" class="note"></div>
+        <button id="readyBtn" class="primary" type="button">READY</button>
+        <button id="startBtn" class="primary" type="button">START</button>
+        <button id="leaveRoom" class="ghost" type="button">LEAVE</button>
+      </div>
+    </section>
     <div id="result" hidden>
       <h1 id="resultTitle">YOU WIN</h1>
       <div id="resultScore" class="final"></div>
+      <div id="resultNames" class="names" hidden></div>
+      <div id="resultNote" class="sub" hidden></div>
       <div class="btns">
         <button id="again" type="button">PLAY AGAIN</button>
         <button id="toMenu" class="ghost" type="button">MENU</button>
@@ -119,7 +283,7 @@
     </div>
     <div id="pause">
       <div class="menu">
-        <div class="group">
+        <div class="group sp-only">
           <div class="cap">PLAYERS</div>
           <div id="modes" class="pills" role="group" aria-label="Player count">
             <button data-n="2" aria-pressed="false">2P</button>
@@ -127,11 +291,11 @@
             <button data-n="4" aria-pressed="false">4P</button>
           </div>
         </div>
-        <div class="group">
+        <div class="group sp-only">
           <div class="cap">YOUR COLOR</div>
-          <div id="colors" class="pills" role="group" aria-label="Your colour"></div>
+          <div id="colors" class="pills swatches" role="group" aria-label="Your colour"></div>
         </div>
-        <div class="group">
+        <div class="group sp-only">
           <div class="cap">DIFFICULTY</div>
           <div id="difficulty" class="pills" role="group" aria-label="Difficulty">
             <button data-d="easy" aria-pressed="false">EASY</button>
@@ -140,11 +304,11 @@
             <button data-d="expert" aria-pressed="false">EXPERT</button>
           </div>
         </div>
-        <label class="slider cap">POINTS TO WIN
+        <label class="slider cap sp-only">POINTS TO WIN
           <output id="winOut">10</output>
           <input id="winInput" type="range" min="10" max="100" step="1" value="10" />
         </label>
-        <label class="slider cap">MALLET SIZE
+        <label class="slider cap sp-only">MALLET SIZE
           <output id="malletOut">100%</output>
           <input id="malletInput" type="range" min="0.6" max="1.6" step="0.05" value="1" />
         </label>
@@ -171,8 +335,11 @@
           <output id="sensOut">1.0</output>
           <input id="sensInput" type="range" min="0.25" max="5" step="0.05" value="1" />
         </label>
+        <div id="pauseLeft" class="note mp-only" style="justify-content:center"></div>
         <button id="resume" type="button">PLAY</button>
-        <button id="restart" class="ghost" type="button">RESTART GAME</button>
+        <button id="restart" class="ghost sp-only" type="button">RESTART GAME</button>
+        <button id="leaveGame" class="ghost mp-only" type="button" style="justify-content:center">LEAVE GAME</button>
+        <button id="toHome" class="ghost sp-only" type="button">MAIN MENU</button>
       </div>
     </div>
     <script type="module" src="/src/main.ts"></script>

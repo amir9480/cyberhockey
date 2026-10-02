@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { TableLayout } from './layout';
+import type { TableLayout } from '@airhockey/shared/layout';
 import { seatColor } from './colors';
 import { SevenSegment } from './segment';
 import type { WinUniforms } from './effects';

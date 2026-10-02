@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import vert from '../shaders/trail.vert?raw';
 import frag from '../shaders/trail.frag?raw';
-import type { Vec2 } from './layout';
+import type { Vec2 } from '@airhockey/shared/layout';
 
 const MAX_POINTS = 40;
 const LIFE = 0.25; // seconds a trail point lives

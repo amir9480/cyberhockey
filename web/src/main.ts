@@ -1,9 +1,11 @@
 import { View, DEFAULT_PITCH, QUALITIES, type Quality } from './game/view';
 import { Input } from './game/input';
-import type { PlayerCount } from './game/layout';
-import { DEFAULT_ROOM, clampMalletScale, clampWinScore } from './game/room';
-import { DIFFICULTIES, type Difficulty } from './game/ai';
+import type { PlayerCount } from '@airhockey/shared/layout';
+import { DEFAULT_ROOM, clampMalletScale, clampWinScore } from '@airhockey/shared/room';
+import { DIFFICULTIES, type Difficulty } from '@airhockey/shared/ai';
 import { PALETTE_HEX, assignSeatColors } from './game/colors';
+import { getName, setName } from './net/identity';
+import { Multiplayer, type MpScreen } from './net/mp';
 
 const canvas = document.getElementById('view') as HTMLCanvasElement;
 const pauseMenu = document.getElementById('pause') as HTMLElement;
@@ -17,19 +19,41 @@ const parse = (v: string | null): PlayerCount => (v === '3' ? 3 : v === '4' ? 4 
 let players: PlayerCount = 2;
 let myColor = 0;
 
+// --- screens -----------------------------------------------------------------
+// home: start screen. sp: single player (its pause menu is the main screen). mp: multiplayer, with its own screens.
+type Mode = 'home' | 'sp' | 'mp';
+let mode: Mode = 'home';
+let mpScreen: MpScreen = 'lobby';
+const byId = (id: string) => document.getElementById(id) as HTMLElement;
+const homeEl = byId('home');
+const lobbyEl = byId('lobby');
+const roomEl = byId('room');
+
+function updateOverlays() {
+  homeEl.hidden = mode !== 'home';
+  lobbyEl.hidden = !(mode === 'mp' && mpScreen === 'lobby');
+  roomEl.hidden = !(mode === 'mp' && mpScreen === 'room');
+  pauseMenu.hidden = mode === 'home' || (mode === 'sp' ? playing : mpScreen !== 'menu');
+}
+
 function setPlayers(n: PlayerCount) {
   players = n;
   assignSeatColors(myColor); // rivals re-roll their colours whenever the table is rebuilt
   view.setPlayers(n);
   for (const b of buttons) b.setAttribute('aria-pressed', String(Number(b.dataset.n) === n));
+  if (mode === 'sp') syncPlayersUrl();
+}
+
+function syncPlayersUrl() {
   const url = new URL(location.href);
-  url.searchParams.set('players', String(n));
+  url.searchParams.set('players', String(players));
+  url.searchParams.delete('room');
   history.replaceState(null, '', url);
 }
 
 for (const b of buttons) b.addEventListener('click', () => setPlayers(parse(b.dataset.n ?? null)));
 addEventListener('keydown', (e) => {
-  if (paused && (e.key === '2' || e.key === '3' || e.key === '4')) setPlayers(parse(e.key));
+  if (mode === 'sp' && paused && (e.key === '2' || e.key === '3' || e.key === '4')) setPlayers(parse(e.key));
 });
 
 // --- sensitivity (persisted) ------------------------------------------------
@@ -303,6 +327,9 @@ function showResult(winner: number, scores: number[]) {
   const won = winner === 0;
   resultTitle.textContent = won ? 'YOU WIN' : 'DEFEATED';
   resultScore.textContent = scores.join('  –  ');
+  byId('resultNames').hidden = true;
+  byId('resultNote').hidden = true;
+  byId('again').textContent = 'PLAY AGAIN';
   result.className = won ? 'win' : 'lose';
   result.hidden = false;
   view.running = false;
@@ -332,8 +359,11 @@ function restartGame() {
 }
 
 view.onGameOver = showResult;
-document.getElementById('again')?.addEventListener('click', restartGame);
+document.getElementById('again')?.addEventListener('click', () => {
+  if (mode === 'sp') restartGame();
+});
 document.getElementById('toMenu')?.addEventListener('click', () => {
+  if (mode !== 'sp') return;
   if (document.fullscreenElement) void document.exitFullscreen();
   else setPlaying(false);
 });
@@ -342,7 +372,7 @@ document.getElementById('restart')?.addEventListener('click', () => {
   resumeBtn.focus({ preventScroll: true });
 });
 addEventListener('keydown', (e) => {
-  if ((e.key === 'r' || e.key === 'R') && playing && result.hidden) restartGame();
+  if (mode === 'sp' && (e.key === 'r' || e.key === 'R') && playing && result.hidden) restartGame();
 });
 
 function setPlaying(on: boolean) {
@@ -350,7 +380,7 @@ function setPlaying(on: boolean) {
   playing = on;
   paused = !on;
   document.body.classList.toggle('playing', on);
-  pauseMenu.hidden = on;
+  updateOverlays();
   input.enabled = on;
   view.running = on;
   input.mouseActive = on;
@@ -403,25 +433,120 @@ async function start() {
 }
 
 document.addEventListener('fullscreenchange', () => {
-  if (document.fullscreenElement) setPlaying(true);
-  else setPlaying(false);
+  if (mode === 'mp') mp.onFullscreenChange();
+  else if (mode === 'sp') setPlaying(!!document.fullscreenElement);
 });
 
 addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && playing && !document.fullscreenElement) setPlaying(false);
+  if (e.key !== 'Escape' || document.fullscreenElement) return;
+  if (mode === 'sp' && playing) setPlaying(false);
+  else if (mode === 'mp') mp.selfPause();
 });
 
 // Clicking while playing re-grabs the pointer (e.g. after alt-tab).
 document.addEventListener('click', (e) => {
   const t = e.target as HTMLElement;
-  if (t.closest('#modes') || t.closest('#pause') || t.closest('#result')) return;
-  if (playing) lockPointer();
+  if (t.closest('#modes') || t.closest('#pause') || t.closest('#result') || t.closest('.screen') || t.closest('#banner')) return;
+  if (mode === 'sp' && playing) lockPointer();
+  else if (mode === 'mp') mp.grab();
 });
-resumeBtn.addEventListener('click', () => void start());
+resumeBtn.addEventListener('click', () => {
+  if (mode === 'mp') void mp.resumeClick();
+  else void start();
+});
+
+// --- multiplayer ---------------------------------------------------------------
+const mp: Multiplayer = new Multiplayer({
+  view,
+  input,
+  setScreen(s) {
+    mpScreen = s;
+    updateOverlays();
+    if (s === 'menu') resumeBtn.focus({ preventScroll: true });
+  },
+  engage() {
+    document.body.classList.add('playing');
+    resumeBtn.textContent = 'RESUME';
+    input.enabled = true;
+    input.mouseActive = true;
+    view.running = true;
+  },
+  disengage() {
+    document.body.classList.remove('playing');
+    input.enabled = false;
+    input.mouseActive = false;
+    input.release();
+    view.running = false;
+    if (document.pointerLockElement) document.exitPointerLock();
+  },
+  lockPointer,
+  goFullscreen: () => {
+    if (document.fullscreenElement) return Promise.resolve();
+    if (!canFullscreen) return Promise.reject(new Error('no fullscreen'));
+    return document.documentElement.requestFullscreen({ navigationUI: 'hide' });
+  },
+  exit() {
+    mode = 'home';
+    updateOverlays();
+  },
+});
+
+// --- start screen --------------------------------------------------------------
+const nameInput = document.getElementById('nameInput') as HTMLInputElement;
+const homeNote = byId('homeNote');
+nameInput.value = getName() ?? '';
+
+function enterSingle() {
+  mode = 'sp';
+  setPlayers(players); // a fresh game, and the table the online game may have replaced
+  syncPlayersUrl();
+  updateOverlays();
+  resumeBtn.focus({ preventScroll: true });
+}
+
+function enterMulti(room: string | null) {
+  const name = setName(nameInput.value) || getName();
+  if (!name) {
+    homeNote.textContent = 'Pick a name first';
+    homeNote.classList.add('warn');
+    nameInput.focus();
+    return;
+  }
+  nameInput.value = name;
+  homeNote.textContent = '';
+  mode = 'mp';
+  mp.enter(room);
+}
+
+byId('goSingle').addEventListener('click', enterSingle);
+byId('goMulti').addEventListener('click', () => enterMulti(new URLSearchParams(location.search).get('room')));
+byId('toHome').addEventListener('click', () => {
+  mode = 'home';
+  const url = new URL(location.href);
+  url.searchParams.delete('players');
+  history.replaceState(null, '', url);
+  updateOverlays();
+});
+
+// --- HUD: FPS everywhere, ping online ---------------------------------------------
+const hud = byId('hud');
+function renderHud() {
+  const ping = mode === 'mp' && mp.ping > 0 ? ` · ${Math.round(mp.ping)} ms` : '';
+  hud.textContent = `${view.fps} FPS${ping}`;
+}
+view.onFps = renderHud;
+setInterval(renderHud, 500);
 
 input.enabled = false;
-resumeBtn.focus({ preventScroll: true });
-setPlayers(parse(new URLSearchParams(location.search).get('players')));
+const params = new URLSearchParams(location.search);
+setPlayers(parse(params.get('players')));
+updateOverlays();
+const roomParam = params.get('room');
+if (roomParam) {
+  // Opened a room link: straight in if we know a name, else ask for one first.
+  if (getName()) enterMulti(roomParam);
+  else homeNote.textContent = 'Pick a name, then press MULTIPLAYER to join the room';
+}
 
 // First run: pick the quality from a short live FPS test. The menu waits for it (no blur, which would skew it).
 let savedQuality: Quality | null = null;

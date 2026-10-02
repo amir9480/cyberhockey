@@ -9,6 +9,7 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noEmit": true,
+    "paths": { "@airhockey/shared/*": ["../shared/src/*"] },
     "skipLibCheck": true,
     "isolatedModules": true
   },

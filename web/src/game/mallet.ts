@@ -3,32 +3,24 @@ import malletVert from '../shaders/mallet.vert?raw';
 import malletFrag from '../shaders/mallet.frag?raw';
 import { seatColor } from './colors';
 import type { WinUniforms } from './effects';
-import { clampToSeat, malletHome, type TableLayout, type Vec2 } from './layout';
+import type { Vec2 } from '@airhockey/shared/layout';
+import { MALLET_RADIUS, type SimMallet } from '@airhockey/shared/mallet';
 
-/** Radius at scale 1. */
-export const MALLET_RADIUS = 0.75;
-const WALL = 0.4 + 0.1; // wall thickness + small gap
-const FOLLOW = 45; // 1/s, how tightly the mallet chases its target
+export { MALLET_RADIUS };
 
-/** A seat's mallet. Seat 0 is the local player (bottom); the others are AI-driven. */
+/** Render layer of a seat's mallet: the shared `SimMallet` holds position, easing and clamping. */
 export class Mallet {
   readonly group = new THREE.Group();
-  readonly pos: Vec2 = { x: 0, y: 0 };
-  /** Position at the start of the last update; with `pos` gives the mallet's motion. */
-  readonly prev: Vec2 = { x: 0, y: 0 };
-  /** Current radius, after the room's size setting. */
-  radius = MALLET_RADIUS;
-  private target: Vec2 = { x: 0, y: 0 };
   private geo: THREE.LatheGeometry;
   private mat: THREE.ShaderMaterial;
   private mirrorMat: THREE.ShaderMaterial;
   private color: { value: THREE.Color };
 
   constructor(
-    private layout: TableLayout,
-    readonly seat: number,
+    readonly sim: SimMallet,
     fx: WinUniforms,
   ) {
+    const seat = sim.seat;
     this.color = { value: seatColor(seat).clone() };
     const profile = [
       [0.0, 0.0],
@@ -63,53 +55,44 @@ export class Mallet {
     reflection.scale.y = -1;
     reflection.renderOrder = 0;
     this.group.add(body, reflection);
-
-    const home = malletHome(layout, seat);
-    this.pos = this.clamp(home);
-    this.target = { ...this.pos };
-    this.prev.x = this.pos.x;
-    this.prev.y = this.pos.y;
-    this.apply();
+    this.group.scale.setScalar(sim.radius / MALLET_RADIUS);
+    this.sync();
   }
 
+  get seat() {
+    return this.sim.seat;
+  }
+  get pos() {
+    return this.sim.pos;
+  }
+  get radius() {
+    return this.sim.radius;
+  }
   /** Where the mallet is heading (its eased position catches up to this). */
   get goal(): Vec2 {
-    return this.target;
-  }
-
-  clamp(p: Vec2): Vec2 {
-    return clampToSeat(this.layout, this.seat, p, this.radius, WALL);
+    return this.sim.target;
   }
 
   /** Resize the mallet (visual and physical); keeps it inside its zone. */
   setScale(scale: number) {
-    this.radius = MALLET_RADIUS * scale;
+    this.sim.setScale(scale);
     this.group.scale.setScalar(scale);
-    const p = this.clamp(this.pos);
-    this.pos.x = p.x;
-    this.pos.y = p.y;
-    this.prev.x = p.x;
-    this.prev.y = p.y;
-    this.target = this.clamp(this.target);
-    this.apply();
+    this.sync();
   }
 
   /** Where the mallet should be; it eases toward it. */
   moveTo(p: Vec2) {
-    this.target = this.clamp(p);
+    this.sim.moveTo(p);
   }
 
   update(dt: number) {
-    this.prev.x = this.pos.x;
-    this.prev.y = this.pos.y;
-    const k = 1 - Math.exp(-FOLLOW * dt);
-    this.pos.x += (this.target.x - this.pos.x) * k;
-    this.pos.y += (this.target.y - this.pos.y) * k;
-    this.apply();
+    this.sim.update(dt);
+    this.sync();
   }
 
-  private apply() {
-    this.group.position.set(this.pos.x, 0, this.pos.y);
+  /** Copy the simulated position onto the mesh. */
+  sync() {
+    this.group.position.set(this.sim.pos.x, 0, this.sim.pos.y);
   }
 
   dispose() {

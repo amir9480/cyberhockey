@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import vert from '../shaders/mallet.vert?raw'; // same varyings: normal, view dir, local pos, height
 import frag from '../shaders/ball.frag?raw';
 import { BALL_NEUTRAL, seatColor } from './colors';
-import type { Vec2 } from './layout';
-import { PUCK_RADIUS } from './physics';
+import type { Vec2 } from '@airhockey/shared/layout';
+import { PUCK_RADIUS } from '@airhockey/shared/physics';
 import { Trail } from './trail';
 
 /** Radius at scale 1. */

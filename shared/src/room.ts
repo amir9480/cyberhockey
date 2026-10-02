@@ -1,5 +1,5 @@
 /**
- * Rules that belong to a game room. Local for now; with multiplayer the room owner picks
+ * Rules that belong to a game room. In single player they are local; online the room host picks
  * them and the server sends them to everyone, so keep them in one plain object.
  */
 export interface RoomSettings {
@@ -15,10 +15,17 @@ export const WIN_SCORE = { min: 10, max: 100, step: 1 };
 
 export const DEFAULT_ROOM: RoomSettings = { malletScale: 1, winScore: 10 };
 
+/** Number of colours a player can pick from (see the client's palette). */
+export const PALETTE_SIZE = 8;
+
 export function clampWinScore(v: number): number {
+  if (!Number.isFinite(v)) return DEFAULT_ROOM.winScore;
   return Math.min(WIN_SCORE.max, Math.max(WIN_SCORE.min, Math.round(v)));
 }
 
+/** Clamped to the range and snapped to the slider step. */
 export function clampMalletScale(v: number): number {
-  return Math.min(MALLET_SCALE.max, Math.max(MALLET_SCALE.min, v));
+  if (!Number.isFinite(v)) return DEFAULT_ROOM.malletScale;
+  const snapped = Math.round(v / MALLET_SCALE.step) * MALLET_SCALE.step;
+  return Math.min(MALLET_SCALE.max, Math.max(MALLET_SCALE.min, Math.round(snapped * 100) / 100));
 }
