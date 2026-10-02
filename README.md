@@ -51,3 +51,11 @@ Rooms live in memory on a single instance; a restart drops running games.
 - **A late hit rewrites a short stretch of the puck's path.** The server's hit message carries the time it judged against (`from`) and the puck's position now; clients drop the positions after `from` and move the ball from the hit point along its new path.
 - **Wire format**: mallet snapshots, puck positions, hits, wall bounces, mallet input and hit claims are small binary frames (`shared/src/binary.ts`); everything else is JSON.
 - Limits: other players are drawn `delay` ms behind real time (that is what makes their movement verified and smooth). Mallets are confined to their own zones, so two hits can only collide when both mallets touch the puck at the dividing line at once; the server orders them.
+
+## Docker
+
+```sh
+docker compose up --build   # http://localhost:3000 (PORT=8080 docker compose up changes the host port)
+```
+
+`docker build -t airhockey .` builds the image alone. Run a single instance: rooms live in memory.
