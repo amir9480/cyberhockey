@@ -4,6 +4,11 @@ import type { RoomSettings } from './room';
 
 export const ROOM_ID_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
 export const ROOM_ID_LENGTH = 8;
+
+/** Whether `id` is shaped like a room id (it may or may not exist). */
+export function isRoomId(id: unknown): id is string {
+  return typeof id === 'string' && id.length === ROOM_ID_LENGTH && [...id].every((c) => ROOM_ID_ALPHABET.includes(c));
+}
 export const NAME_MAX = 16;
 export const MAX_FRAME_BYTES = 4096;
 

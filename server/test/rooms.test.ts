@@ -417,15 +417,31 @@ describe('host and grace', () => {
     expect(room.members).toHaveLength(1);
   });
 
-  it('bans a kicked member and reports unknown rooms', async () => {
+  it('bans a kicked member', async () => {
     const [a, b] = [await connect('A'), await connect('B')];
     const roomId = await setupRoom(a, [b]);
     a.send({ t: 'kick', id: b.id });
     expect((await b.nextType('left')).reason).toBe('kicked');
     b.send({ t: 'join', room: roomId });
     expect((await b.nextType('error')).code).toBe('kicked');
+  });
+
+  it('starts a new private room for an unknown code, under that code when it is a valid one', async () => {
+    const [a, b, c] = [await connect('A'), await connect('B'), await connect('C')];
+    a.send({ t: 'join', room: 'zzzzzzzz' });
+    const made = await a.room((m) => m.id === 'zzzzzzzz');
+    expect(made).toMatchObject({ public: false, quick: false, host: a.id });
+    // Someone else following the same link lands in it.
     b.send({ t: 'join', room: 'zzzzzzzz' });
-    expect((await b.nextType('error')).code).toBe('not_found');
+    const joined = await b.room((m) => m.id === 'zzzzzzzz');
+    expect(joined.members).toHaveLength(2);
+    // Not a valid code: a new private room under a fresh one.
+    c.send({ t: 'join', room: 'nope!' });
+    const fresh = await c.nextType('room');
+    expect(fresh.id).not.toBe('nope!');
+    expect(fresh.id).toHaveLength(8);
+    expect(fresh.public).toBe(false);
+    expect(c.history.some((m) => m.t === 'error')).toBe(false);
   });
 
   it('closes an empty room and drops it from the list', async () => {

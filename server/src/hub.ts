@@ -1,5 +1,5 @@
 import { randomInt } from 'node:crypto';
-import { ROOM_ID_ALPHABET, ROOM_ID_LENGTH, cleanName, type ClientMsg, type LobbyRoom } from '@airhockey/shared/protocol';
+import { ROOM_ID_ALPHABET, ROOM_ID_LENGTH, cleanName, isRoomId, type ClientMsg, type LobbyRoom } from '@airhockey/shared/protocol';
 import { clampMalletScale, clampWinScore } from '@airhockey/shared/room';
 import type { Client } from './client';
 import type { ServerConfig } from './config';
@@ -51,7 +51,15 @@ export class Hub {
       }
       case 'join': {
         const room = typeof msg.room === 'string' ? this.rooms.get(msg.room) : undefined;
-        if (!room) return client.error('not_found', 'Room not found');
+        if (!room) {
+          // An unknown code (a room that has closed, or a typo): start a new private room. Under that code when it is a
+          // valid one, so the link keeps working for whoever else follows it.
+          this.leaveCurrent(client);
+          const opts = { public: false, quick: false, cap: 4, settings: defaultSettings() };
+          const fresh = this.newRoom(opts, isRoomId(msg.room) ? msg.room : undefined);
+          fresh.join(client);
+          return;
+        }
         const err = room.canJoin(client.id);
         if (err) return client.error(err, err === 'full' ? 'Room is full' : 'You were kicked from this room');
         if (client.room && client.room !== room) this.leaveCurrent(client);
@@ -88,11 +96,12 @@ export class Hub {
     client.room?.leave(client);
   }
 
-  private newRoom(opts: ConstructorParameters<typeof Room>[3]) {
-    let id: string;
-    do {
+  /** A new room, under `wanted` if given and free, else a random id. */
+  private newRoom(opts: ConstructorParameters<typeof Room>[3], wanted?: string) {
+    let id = wanted && !this.rooms.has(wanted) ? wanted : '';
+    while (!id || this.rooms.has(id)) {
       id = Array.from({ length: ROOM_ID_LENGTH }, () => ROOM_ID_ALPHABET[randomInt(ROOM_ID_ALPHABET.length)]).join('');
-    } while (this.rooms.has(id));
+    }
     const room = new Room(id, this, this.cfg, opts);
     this.rooms.set(id, room);
     return room;
