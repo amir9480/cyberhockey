@@ -1,0 +1,22 @@
+precision highp float;
+uniform vec3 uColor;
+uniform float uMirror;
+in vec3 vN;
+in vec3 vV;
+in vec3 vLocal;
+in float vY;
+out vec4 outColor;
+
+void main() {
+  vec3 col = uColor * (0.85 / max(dot(uColor, vec3(0.2126, 0.7152, 0.0722)), 0.1)); // even brightness
+  vec3 n = normalize(vN);
+  float rim = pow(1.0 - abs(dot(n, normalize(vV))), 2.0);
+  float top = smoothstep(0.55, 0.9, abs(n.y));
+  float side = 1.0 - top;
+  float rr = length(vLocal.xz);
+  float ring = (1.0 - smoothstep(0.0, 0.04, abs(rr - 0.34))) * top;
+  vec3 hot = mix(col, vec3(1.0), 0.45);
+  vec3 c = vec3(0.02) + col * (0.18 + rim * 0.5) + hot * (side * 0.75 + ring * 0.9);
+  if (uMirror > 0.5) c *= 0.35 * exp(vY * 0.9);
+  outColor = vec4(c, 1.0);
+}
