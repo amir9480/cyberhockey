@@ -19,6 +19,8 @@ export class Mallet {
   constructor(
     readonly sim: SimMallet,
     fx: WinUniforms,
+    /** Shared clock, seconds. */
+    uTime: { value: number },
   ) {
     const seat = sim.seat;
     this.color = { value: seatColor(seat).clone() };
@@ -44,7 +46,7 @@ export class Mallet {
         vertexShader: malletVert,
         fragmentShader: malletFrag,
         side: THREE.DoubleSide,
-        uniforms: { ...fx, uMirror: { value: mirror }, uColor: this.color, uSeat: { value: seat } },
+        uniforms: { ...fx, uTime, uMirror: { value: mirror }, uColor: this.color, uSeat: { value: seat } },
       });
     this.mat = make(0);
     this.mirrorMat = make(1);

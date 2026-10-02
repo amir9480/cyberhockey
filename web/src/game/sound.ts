@@ -135,6 +135,11 @@ const EFFECTS: Record<string, { dur: number; build: Build }> = {
   },
 };
 
+const HIT_GAP = 0.12; // s: a softer hit this soon after the last one is not played
+const HIT_HARDER = 1.5; // ...unless it is this many times harder
+const HIT_RUN = 0.4; // s: hits closer together than this form a run
+const HIT_RUN_FADE = 0.6; // each hit in a run is quieter: gain / (1 + run * this)
+
 export class Sound {
   musicOn = true;
   sfxOn = true;
@@ -148,6 +153,10 @@ export class Sound {
   private nextChord = 0;
   private chordIdx = 0;
   private last = new Map<string, number>();
+  private hitAt = -1;
+  private hitPower = 0;
+  /** Hits in the current quick run, after the first. */
+  private hitRun = 0;
 
   constructor() {
     this.preload();
@@ -173,8 +182,18 @@ export class Sound {
 
   /** Mallet touches the puck. `power` 0..1 from the impact speed. */
   hit(power: number) {
+    const c = this.ctx;
+    if (!c) return;
     const p = clamp(power, 0.15, 1);
-    this.play('hit', 0.4 + 0.6 * p, 0.9 + p * 0.3, 0.03);
+    const t = c.currentTime;
+    const since = t - this.hitAt;
+    // A burst of touches (dribbling, pinning, a puck rattling against a mallet) is one sound: a hit this soon after
+    // another is skipped unless it is clearly harder, and each one in a quick run is quieter than the last.
+    if (since < HIT_GAP && p < this.hitPower * HIT_HARDER) return;
+    this.hitRun = since < HIT_RUN ? this.hitRun + 1 : 0;
+    this.hitAt = t;
+    this.hitPower = p;
+    this.play('hit', (0.4 + 0.6 * p) / (1 + this.hitRun * HIT_RUN_FADE), 0.9 + p * 0.3);
   }
 
   /** Puck bounces off the table edge / corner. */

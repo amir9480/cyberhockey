@@ -7,6 +7,7 @@ uniform vec3 uLoseColor;
 uniform float uLoseAmt;
 uniform int uLoseSeat;
 uniform int uSeat;
+uniform float uTime;
 in vec3 vN;
 in vec3 vV;
 in vec3 vLocal;
@@ -25,8 +26,15 @@ void main() {
   float ring = (1.0 - smoothstep(0.0, 0.05, abs(rr - 0.56))) * top;
   float knob = smoothstep(0.36, 0.3, rr) * top; // handle cap
 
+  // Hologram touches: a dashed ring turning on the top face, scan lines rising up the sides, a cool fringe on the rim.
+  float ang = atan(vLocal.z, vLocal.x);
+  float dash = step(0.45, fract(ang / 6.2831853 * 16.0 + uTime * 0.5));
+  float ring2 = (1.0 - smoothstep(0.0, 0.025, abs(rr - 0.66))) * top * dash;
+  float scan = 0.8 + 0.2 * sin(vY * 70.0 - uTime * 5.0);
+  vec3 fringe = mix(col, vec3(0.7, 0.95, 1.0), 0.6) * pow(rim, 4.0) * 0.3;
+
   vec3 body = vec3(0.025, 0.02, 0.05) + col * 0.05;
-  vec3 c = body + col * (rim * 0.75 + ring * 0.9 + knob * 0.2 + 0.1);
+  vec3 c = body + col * (rim * 0.75 * scan + ring * 0.9 + ring2 * 0.7 + knob * 0.2 + 0.1) + fringe;
   if (uMirror > 0.5) c *= 0.35 * exp(vY * 0.9);
   outColor = vec4(c, 1.0);
 }

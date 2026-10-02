@@ -20,11 +20,12 @@ export class Ball {
   private reflection: THREE.Mesh;
   private geo: THREE.LatheGeometry;
   private mats: THREE.ShaderMaterial[];
-  private color = { value: BALL_NEUTRAL.clone() };
+  private colorU = { value: BALL_NEUTRAL.clone() };
   private targetColor = BALL_NEUTRAL.clone();
   private trail: Trail;
 
-  constructor() {
+  /** `uTime`: shared clock, seconds. */
+  constructor(uTime: { value: number }) {
     const r = BALL_RADIUS;
     const h = 0.2;
     const bevel = 0.05;
@@ -44,7 +45,7 @@ export class Ball {
         vertexShader: vert,
         fragmentShader: frag,
         side: THREE.DoubleSide,
-        uniforms: { uColor: this.color, uMirror: { value: mirror } },
+        uniforms: { uColor: this.colorU, uTime, uMirror: { value: mirror } },
       });
     this.mats = [make(0), make(1)];
     const body = new THREE.Mesh(this.geo, this.mats[0]);
@@ -54,7 +55,7 @@ export class Ball {
     reflection.renderOrder = 0;
     this.body = body;
     this.reflection = reflection;
-    this.trail = new Trail(this.color, BALL_RADIUS);
+    this.trail = new Trail(this.colorU, BALL_RADIUS);
     this.group.add(this.trail.mesh, body, reflection);
   }
 
@@ -64,6 +65,11 @@ export class Ball {
     this.body.scale.setScalar(scale);
     this.reflection.scale.set(scale, -scale, scale);
     this.trail.setRadius(this.radius);
+  }
+
+  /** Current colour (eases toward the last hitter's). */
+  get color(): THREE.Color {
+    return this.colorU.value;
   }
 
   setPosition(p: Vec2) {
@@ -80,13 +86,13 @@ export class Ball {
   /** Back to white instantly, e.g. when a new round starts. */
   resetColor() {
     this.targetColor.copy(BALL_NEUTRAL);
-    this.color.value.copy(BALL_NEUTRAL);
+    this.colorU.value.copy(BALL_NEUTRAL);
   }
 
   update(dt: number) {
     if (this.group.visible) this.trail.update(dt, this.pos);
     else this.trail.clear();
-    this.color.value.lerp(this.targetColor, 1 - Math.exp(-COLOR_RATE * dt));
+    this.colorU.value.lerp(this.targetColor, 1 - Math.exp(-COLOR_RATE * dt));
   }
 
   dispose() {

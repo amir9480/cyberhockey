@@ -1,6 +1,11 @@
 precision highp float;
 #define MAX_N 4
 #define MAX_OCC 8
+#define MAX_RIP 4
+#define RIPPLE_SPEED 10.0 // units/s
+#define RIPPLE_LIFE 1.0   // seconds
+#define SCAN_SPEED 6.0    // units/s of the scan ring sweeping out from the center
+#define SCAN_PERIOD 7.0   // seconds between scans
 #define WALL_GLOW 0.15 // light spilling from the walls onto the floor
 #define HALO_GLOW 0.07 // soft haze outside the table
 #define BEAM_STRENGTH 0.32 // goal spotlight brightness: lower = dimmer
@@ -31,6 +36,12 @@ uniform float uCenterR;      // center ring radius
 uniform float uCreaseR;      // goal crease radius
 uniform int uDivN;           // zone divider count
 uniform vec2 uDiv[MAX_N];    // zone divider directions
+uniform float uFx;           // effect level: 0 low, 1 medium, 2 high
+uniform vec4 uRip[MAX_RIP];  // ripples: xy position, z start time, w strength
+uniform vec3 uRipCol[MAX_RIP];
+uniform float uKick;         // 0..1 impulse from hits and goals
+uniform vec3 uPuck;          // xy position, z 1 when shown
+uniform float uRadius;       // table radius
 
 in vec2 vP;
 out vec4 outColor;
@@ -79,6 +90,23 @@ float lineMask(float d, float w, float aa) {
   return 1.0 - smoothstep(w - aa, w + aa, d);
 }
 
+// Distance from p to the nearest edge of a hexagonal tiling (cells 1 unit across the flats).
+float hexEdge(vec2 p) {
+  const vec2 s = vec2(1.0, 1.7320508);
+  vec2 a = mod(p, s) - s * 0.5;
+  vec2 b = mod(p - s * 0.5, s) - s * 0.5;
+  vec2 q = abs(dot(a, a) < dot(b, b) ? a : b);
+  return 0.5 - max(dot(q, s * 0.5), q.x);
+}
+
+// Dashes around a circle: `count` per turn, `duty` of each lit, turning at `spin` turns/s.
+float dashes(float ang, float count, float duty, float spin) {
+  float x = fract(ang / 6.2831853 + uTime * spin) * count;
+  float f = abs(fract(x) - 0.5);
+  float fw = min(fwidth(x), 0.2); // the atan seam has a huge derivative: cap it
+  return 1.0 - smoothstep(duty * 0.5 - fw, duty * 0.5 + fw, f);
+}
+
 void main() {
   vec2 p = vP;
   float sd = sdPoly(p) - uR;
@@ -98,7 +126,41 @@ void main() {
   vec2 gw = fwidth(g);
   vec2 gl = abs(fract(g - 0.5) - 0.5) / max(gw, vec2(1e-4));
   float grid = 1.0 - min(min(gl.x, gl.y), 1.0);
-  col += mix(neon(uTime * 0.035), winN, uWinAmt) * grid * 0.07 * (1.0 + uWinAmt * 2.0);
+  vec3 gridCol = mix(neon(uTime * 0.035), winN, uWinAmt);
+
+  // The grid wakes up around the mallets and puck...
+  float lit = 0.0;
+  for (int k = 0; k < MAX_OCC; k++) {
+    if (k >= uOccN) break;
+    vec2 o = p - uOcc[k].xy;
+    float r = uOcc[k].z * 2.2;
+    lit += exp(-dot(o, o) / (r * r));
+  }
+  // ...behind a scan ring that sweeps out from the center now and then...
+  float scanR = mod(uTime, SCAN_PERIOD) * SCAN_SPEED;
+  float scan = exp(-pow(length(p) - scanR, 2.0) * 1.5) * (1.0 - smoothstep(uRadius * 0.6, uRadius, scanR));
+  // ...and under ripples from every hit.
+  vec3 rip = vec3(0.0);
+  for (int i = 0; i < MAX_RIP; i++) {
+    vec4 r = uRip[i];
+    float age = uTime - r.z;
+    if (r.w <= 0.0 || age < 0.0 || age > RIPPLE_LIFE) continue;
+    float w = 0.25 + age * 0.8;
+    float dd = length(p - r.xy) - age * RIPPLE_SPEED;
+    float fade = 1.0 - age / RIPPLE_LIFE;
+    float crisp = lineMask(abs(dd), 0.05, aa * 1.5); // sharp leading edge on top of the soft band
+    rip += uRipCol[i] * (exp(-dd * dd / (w * w)) * 0.6 + crisp) * fade * fade * r.w;
+  }
+  col += gridCol * grid * 0.07 * (1.0 + uWinAmt * 2.0 + lit * 5.0 + scan * 3.0);
+  col += rip * (0.35 + grid * 1.5);
+
+  // Faint hexagonal plating under the grid.
+  if (uFx > 0.5) {
+    vec2 hp = p * 0.9;
+    float he = hexEdge(hp);
+    float hex = lineMask(he, 0.0, fwidth(hp.x) * 1.2);
+    col += gridCol * hex * 0.018 * (1.0 + lit * 3.0 + scan * 2.0);
+  }
   col += winN * uWinAmt * 0.05 * exp(-dot(p, p) * 0.01);
 
   // Inner glow hugging the walls.
@@ -106,8 +168,15 @@ void main() {
 
   // Center markings.
   vec3 mark = mix(neon(uTime * 0.035 + 0.5), winN, uWinAmt);
-  float ring = lineMask(abs(length(p) - uCenterR), 0.05, aa * 1.5);
-  float dotc = lineMask(length(p), 0.18, aa * 1.5);
+  float pr = length(p);
+  float pang = atan(p.y, p.x);
+  float ring = lineMask(abs(pr - uCenterR), 0.05, aa * 1.5);
+  float dotc = lineMask(pr, 0.18, aa * 1.5);
+  // HUD around the center ring: a slowly turning dashed ring outside, counter-turning ticks inside.
+  ring += lineMask(abs(pr - uCenterR - 0.4), 0.025, aa * 1.5) * dashes(pang, 48.0, 0.55, 0.012) * 0.8;
+  float tickA = fract(pang / 6.2831853 * 72.0 - uTime * 0.6) - 0.5; // 72 ticks, turning the other way
+  float tick = lineMask(abs(tickA) * 6.2831853 * pr / 72.0, 0.018, aa * 1.5);
+  ring += tick * step(uCenterR - 0.32, pr) * step(pr, uCenterR - 0.14) * 0.7;
   // Zone dividers: start at the center ring, run to the corners.
   float divs = 0.0;
   for (int i = 0; i < MAX_N; i++) {
@@ -128,7 +197,18 @@ void main() {
     float depth = dot(q, n);
     vec3 gc = mix(uGCol[s], uWinColor, uWinAmt); // every seat's lights take the winner's colour
     if (s == uLoseSeat) gc = mix(uGCol[s], uLoseColor, uLoseAmt); // local player lost: red
-    float arc = lineMask(abs(length(q) - uCreaseR), 0.04, aa * 1.5) * step(0.0, depth);
+    float ql = length(q);
+    float arc = lineMask(abs(ql - uCreaseR), 0.04, aa * 1.5) * step(0.0, depth);
+    // Dashed outer arc, and chevrons streaming into the goal; both brighten as the puck closes in.
+    float danger = uPuck.z * exp(-dot(uPuck.xy - uGC[s], uPuck.xy - uGC[s]) / (uCreaseR * uCreaseR * 2.0));
+    float qa = atan(dot(q, t), depth);
+    arc += lineMask(abs(ql - uCreaseR - 0.3), 0.02, aa * 1.5) * step(0.0, depth) * dashes(qa, 40.0, 0.5, 0.0) * 0.6;
+    float lateral = abs(dot(q, t));
+    float chevV = depth - lateral * 0.7;
+    float chev = abs(fract(chevV * 1.1 + uTime * 1.2) - 0.5);
+    float chevBand = (1.0 - smoothstep(0.4, 0.6, lateral)) * smoothstep(0.3, 0.6, depth) * (1.0 - smoothstep(1.2, 1.6, depth));
+    arc += lineMask(chev, 0.04, aa * 2.0) * chevBand * (0.12 + danger * 1.5);
+    arc *= 1.0 + danger * 1.2;
 
     // Spot light: a hidden point behind the goal line shines through the goal mouth.
     vec2 L = uGC[s] - n * uLH;

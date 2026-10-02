@@ -3,6 +3,7 @@ import type { TableLayout } from '@airhockey/shared/layout';
 import { MatchCore } from '@airhockey/shared/match';
 import type { Ball } from './ball';
 import type { WinEffect } from './effects';
+import type { CyberFx } from './cyber';
 import { GameFx } from './gamefx';
 import type { Scoreboard } from './scores';
 import type { Sound } from './sound';
@@ -22,6 +23,7 @@ export class Match {
     difficulty: Difficulty,
     fx: WinEffect,
     sound: Sound,
+    cyber: CyberFx,
     players: TableLayout['players'],
     scale: number,
     winScore: number,
@@ -31,7 +33,7 @@ export class Match {
     this.core = new MatchCore(players, scale, winScore);
     if (online) this.core.net = true;
     else for (let s = 1; s < players; s++) this.core.setAI(s, true, difficulty);
-    const gfx = new GameFx(ball, board, fx, sound, online?.localSeat ?? 0);
+    const gfx = new GameFx(ball, board, fx, sound, cyber, online?.localSeat ?? 0);
     this.core.onEvent = (e) => gfx.handle(e);
     this.ball.setPosition(this.core.physics.pos);
   }

@@ -4,10 +4,13 @@ import railVert from '../shaders/rail.vert?raw';
 import railFrag from '../shaders/rail.frag?raw';
 import floorVert from '../shaders/floor.vert?raw';
 import floorFrag from '../shaders/floor.frag?raw';
+import goalVert from '../shaders/goal.vert?raw';
+import goalFrag from '../shaders/goal.frag?raw';
 import type { PlayerCount, TableLayout, Vec2 } from '@airhockey/shared/layout';
 import { buildLayout } from '@airhockey/shared/layout';
 import { seatColor } from './colors';
 import type { WinUniforms } from './effects';
+import type { CyberUniforms } from './cyber';
 
 const WALL_HEIGHT = 0.55;
 const WALL_THICKNESS = 0.4;
@@ -15,6 +18,7 @@ const ARC_STEPS = 10;
 const MAX_N = 4;
 const MAX_OCC = 8;
 const LIGHT_BACK = 2.0;
+const FIELD_HEIGHT = WALL_HEIGHT * 1.7; // goal force field
 
 /** Something that casts a light shadow on the floor: position and radius. */
 export interface Occluder {
@@ -137,15 +141,46 @@ function buildRailGeometry(polylines: RailPoint[][]): THREE.BufferGeometry {
 export interface Table {
   group: THREE.Group;
   layout: TableLayout;
-  update(time: number): void;
   setOccluders(list: Occluder[]): void;
   setShadows(on: boolean): void;
   dispose(): void;
 }
 
-export function createTable(players: PlayerCount, fx: WinUniforms): Table {
+/** A glowing curtain across each goal mouth, one geometry for all of them. */
+function buildGoalFields(layout: TableLayout): THREE.BufferGeometry {
+  const pos: number[] = [];
+  const uv: number[] = [];
+  const color: number[] = [];
+  const goal: number[] = [];
+  const idx: number[] = [];
+  layout.seats.forEach((st, i) => {
+    const c = seatColor(i);
+    const hw = layout.goalWidth / 2;
+    // On the inner face of the walls, where the puck crosses the goal line.
+    const cx = st.goalCenter.x + st.inward.x * WALL_THICKNESS;
+    const cy = st.goalCenter.y + st.inward.y * WALL_THICKNESS;
+    const base = i * 4;
+    for (const [u, v] of [[0, 0], [1, 0], [1, 1], [0, 1]]) {
+      const s = (u * 2 - 1) * hw;
+      pos.push(cx + st.tangent.x * s, v * FIELD_HEIGHT, cy + st.tangent.y * s);
+      uv.push(u, v);
+      color.push(c.r, c.g, c.b);
+      goal.push(st.goalCenter.x, st.goalCenter.y);
+    }
+    idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+  });
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setAttribute('aColor', new THREE.Float32BufferAttribute(color, 3));
+  g.setAttribute('aGoal', new THREE.Float32BufferAttribute(goal, 2));
+  g.setIndex(idx);
+  return g;
+}
+
+export function createTable(players: PlayerCount, fx: WinUniforms, cyber: CyberUniforms): Table {
   const layout = buildLayout(players);
-  const uTime = { value: 0 };
+  const { uTime } = cyber;
   const group = new THREE.Group();
 
   const withNeon = (src: string) => src.replace('//NEON', neonGlsl);
@@ -199,6 +234,12 @@ export function createTable(players: PlayerCount, fx: WinUniforms): Table {
       uCreaseR: { value: layout.creaseRadius },
       uDivN: { value: layout.dividers.length },
       uDiv: { value: pad4(layout.dividers) },
+      uFx: cyber.uFx,
+      uRip: cyber.uRip,
+      uRipCol: cyber.uRipCol,
+      uKick: cyber.uKick,
+      uPuck: cyber.uPuck,
+      uRadius: { value: layout.radius },
     },
   });
   const floor = new THREE.Mesh(floorGeo, floorMat);
@@ -225,12 +266,24 @@ export function createTable(players: PlayerCount, fx: WinUniforms): Table {
   mirror.renderOrder = 0;
   group.add(rails, mirror);
 
+  const fieldGeo = buildGoalFields(layout);
+  const fieldMat = new THREE.ShaderMaterial({
+    glslVersion: THREE.GLSL3,
+    vertexShader: goalVert,
+    fragmentShader: goalFrag,
+    uniforms: { ...fx, uTime, uKick: cyber.uKick, uPuck: cyber.uPuck },
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  const fields = new THREE.Mesh(fieldGeo, fieldMat);
+  fields.renderOrder = 6;
+  group.add(fields);
+
   return {
     group,
     layout,
-    update(t) {
-      uTime.value = t;
-    },
     setShadows(on) {
       uShadows.value = on ? 1 : 0;
     },
@@ -244,6 +297,8 @@ export function createTable(players: PlayerCount, fx: WinUniforms): Table {
       floorMat.dispose();
       railMat.dispose();
       mirrorMat.dispose();
+      fieldGeo.dispose();
+      fieldMat.dispose();
     },
   };
 }

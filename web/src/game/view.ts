@@ -3,6 +3,11 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import neonGlsl from '../shaders/neon.glsl?raw';
+import backdropVert from '../shaders/backdrop.vert?raw';
+import backdropFrag from '../shaders/backdrop.frag?raw';
+import postFrag from '../shaders/post.frag?raw';
 import type { PlayerCount, Vec2 } from '@airhockey/shared/layout';
 import type { SimMallet } from '@airhockey/shared/mallet';
 import { createTable, WALL_HEIGHT, type Table } from './table';
@@ -15,17 +20,28 @@ import type { Difficulty } from '@airhockey/shared/ai';
 import { WinEffect } from './effects';
 import { setSeatColors } from './colors';
 import { Sound } from './sound';
+import { CyberFx, type FxLevel } from './cyber';
 
 const SIM_STEP = 1 / 240; // fixed simulation step, seconds
 const MAX_STEPS = 60; // at most 0.25 s of catch-up per frame
 
 export type Quality = 'low' | 'medium' | 'high';
 export const QUALITIES: Quality[] = ['low', 'medium', 'high'];
-const QUALITY: Record<Quality, { dpr: number; bloom: number; shadows: boolean }> = {
-  low: { dpr: 1, bloom: 0, shadows: false }, // bloom 0 = pass off
-  medium: { dpr: 1.5, bloom: 0.4, shadows: true },
-  high: { dpr: 2, bloom: 0.6, shadows: true },
+/**
+ * Per level: max device pixel ratio, bloom resolution scale (0 = pass off), light shadows, and the effect level
+ * (low: shader-only touches; medium: + sparks, backdrop, vignette/grain/shake; high: + aberration, scanlines).
+ */
+const QUALITY: Record<Quality, { dpr: number; bloom: number; shadows: boolean; fx: FxLevel }> = {
+  low: { dpr: 1.5, bloom: 0, shadows: false, fx: 0 },
+  medium: { dpr: 1.75, bloom: 0.4, shadows: true, fx: 1 },
+  high: { dpr: 2, bloom: 0.6, shadows: true, fx: 2 },
 };
+
+const POST_VERT = `varying vec2 vUv;
+void main() {
+  vUv = uv;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}`;
 
 /** Camera tilt above the table plane, in degrees: 90 would be straight down. */
 export const DEFAULT_PITCH = 50;
@@ -36,6 +52,11 @@ export class View {
   private renderer: THREE.WebGLRenderer;
   private composer: EffectComposer;
   private bloom: UnrealBloomPass;
+  private output: OutputPass;
+  private post: ShaderPass;
+  private backdrop: THREE.Mesh;
+  private backdropMat: THREE.ShaderMaterial;
+  private cyber = new CyberFx();
   private scene = new THREE.Scene();
   private camera = new THREE.PerspectiveCamera(36, 1, 0.1, 200);
   private table: Table | null = null;
@@ -91,7 +112,44 @@ export class View {
     this.composer.addPass(new RenderPass(this.scene, this.camera));
     this.bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.3, 0.7, 0.3);
     this.composer.addPass(this.bloom);
-    this.composer.addPass(new OutputPass());
+    this.output = new OutputPass();
+    this.composer.addPass(this.output);
+    // Replaces the output pass from medium up: the same sRGB conversion plus the screen effects.
+    this.post = new ShaderPass(
+      new THREE.ShaderMaterial({
+        vertexShader: POST_VERT,
+        fragmentShader: postFrag,
+        uniforms: {
+          tDiffuse: { value: null },
+          uTime: this.cyber.uniforms.uTime,
+          uFx: this.cyber.uniforms.uFx,
+          uKick: this.cyber.uniforms.uKick,
+          uShake: { value: this.cyber.shake },
+        },
+      }),
+    );
+    this.composer.addPass(this.post);
+
+    // Backdrop (medium up): a far grid and dust behind everything, one full-screen triangle.
+    const tri = new THREE.BufferGeometry();
+    tri.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 3, -1, 0, -1, 3, 0], 3));
+    this.backdropMat = new THREE.ShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      vertexShader: backdropVert,
+      fragmentShader: backdropFrag.replace('//NEON', neonGlsl),
+      uniforms: {
+        uInvVP: { value: new THREE.Matrix4() },
+        uTime: this.cyber.uniforms.uTime,
+        uWinColor: this.fx.uniforms.uWinColor,
+        uWinAmt: this.fx.uniforms.uWinAmt,
+      },
+      depthTest: false,
+      depthWrite: false,
+    });
+    this.backdrop = new THREE.Mesh(tri, this.backdropMat);
+    this.backdrop.frustumCulled = false;
+    this.backdrop.renderOrder = -10;
+    this.scene.add(this.backdrop, this.cyber.sparks);
 
     addEventListener('resize', this.resize);
     this.resize();
@@ -108,14 +166,14 @@ export class View {
     this.teardown();
     this.localSeat = 0;
     this.fx.localSeat = 0;
-    this.table = createTable(n, this.fx.uniforms);
+    this.table = createTable(n, this.fx.uniforms, this.cyber.uniforms);
     this.scene.add(this.table.group);
-    this.ball = new Ball();
+    this.ball = new Ball(this.cyber.uniforms.uTime);
     this.ball.setScale(this.room.malletScale);
     this.scene.add(this.ball.group);
     this.scores = new Scoreboard(this.table.layout, this.fx.uniforms);
     this.scene.add(this.scores.group);
-    this.match = new Match(this.ball, this.scores, this.difficulty, this.fx, this.sound, n, this.room.malletScale, this.room.winScore);
+    this.match = new Match(this.ball, this.scores, this.difficulty, this.fx, this.sound, this.cyber, n, this.room.malletScale, this.room.winScore);
     this.match.onOver = (w, s) => this.onGameOver?.(w, s);
     this.addMallets(this.match.core.mallets);
     this.finishSetup();
@@ -133,15 +191,15 @@ export class View {
     this.room = { ...settings };
     this.localSeat = localSeat;
     this.fx.localSeat = localSeat;
-    this.table = createTable(players, this.fx.uniforms);
+    this.table = createTable(players, this.fx.uniforms, this.cyber.uniforms);
     this.scene.add(this.table.group);
-    this.ball = new Ball();
+    this.ball = new Ball(this.cyber.uniforms.uTime);
     this.ball.setScale(settings.malletScale);
     this.scene.add(this.ball.group);
     this.scores = new Scoreboard(this.table.layout, this.fx.uniforms);
     this.scene.add(this.scores.group);
     scores.forEach((v, s) => this.scores?.setScore(s, v));
-    this.match = new Match(this.ball, this.scores, this.difficulty, this.fx, this.sound, players, settings.malletScale, settings.winScore, {
+    this.match = new Match(this.ball, this.scores, this.difficulty, this.fx, this.sound, this.cyber, players, settings.malletScale, settings.winScore, {
       localSeat,
     });
     this.addMallets(this.match.core.mallets);
@@ -171,7 +229,7 @@ export class View {
   }
 
   private addMallets(sims: SimMallet[]) {
-    this.mallets = sims.map((s) => new Mallet(s, this.fx.uniforms));
+    this.mallets = sims.map((s) => new Mallet(s, this.fx.uniforms, this.cyber.uniforms.uTime));
     for (const m of this.mallets) this.scene.add(m.group);
     this.mallet = this.mallets[this.localSeat];
   }
@@ -230,6 +288,10 @@ export class View {
     const dpr = Math.min(devicePixelRatio, q.dpr);
     const bs = q.bloom || 0.5;
     this.bloom.enabled = q.bloom > 0;
+    this.cyber.setLevel(q.fx);
+    this.post.enabled = q.fx > 0;
+    this.output.enabled = !this.post.enabled;
+    this.backdrop.visible = q.fx > 0;
     this.renderer.setPixelRatio(dpr);
     this.renderer.setSize(w, h, false);
     this.composer.setPixelRatio(dpr);
@@ -239,6 +301,8 @@ export class View {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.fitCamera();
+    // Spark size: pixels per world unit at distance 1.
+    this.cyber.pxScale.value = (h * dpr) / (2 * Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2));
   };
 
   private place(dist: number) {
@@ -320,7 +384,7 @@ export class View {
     const dt = Math.min((now - this.last) / 1000, 0.25);
     this.last = now;
     const t = (now - this.start) / 1000;
-    if (this.table) this.table.update(t);
+    this.cyber.update(t, dt);
 
     // The simulation runs in fixed steps, however many frames per second we render, so
     // game speed is the same on every quality level and refresh rate.
@@ -352,6 +416,10 @@ export class View {
       // A hidden ball (between rounds) casts no shadow.
       if (this.ball.group.visible) casters.push({ x: this.ball.pos.x, y: this.ball.pos.y, r: this.ball.radius });
       this.table.setOccluders(casters);
+      this.cyber.uniforms.uPuck.value.set(this.ball.pos.x, this.ball.pos.y, this.ball.group.visible ? 1 : 0);
+    }
+    if (this.backdrop.visible) {
+      this.backdropMat.uniforms.uInvVP.value.multiplyMatrices(this.camera.matrixWorld, this.camera.projectionMatrixInverse);
     }
     this.composer.render();
     this.fpsFrames++;
