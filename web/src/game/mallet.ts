@@ -68,6 +68,12 @@ export class Mallet {
   get radius() {
     return this.sim.radius;
   }
+  /** Online: where to draw the mallet when that isn't where it is (drawn at another moment); null: where it is. */
+  drawAt: Vec2 | null = null;
+  /** Where the mallet is drawn. */
+  get shown(): Vec2 {
+    return this.drawAt ?? this.sim.pos;
+  }
   /** Where the mallet is heading (its eased position catches up to this). */
   get goal(): Vec2 {
     return this.sim.target;
@@ -90,9 +96,10 @@ export class Mallet {
     this.sync();
   }
 
-  /** Copy the simulated position onto the mesh. */
+  /** Copy the drawn position onto the mesh. */
   sync() {
-    this.group.position.set(this.sim.pos.x, 0, this.sim.pos.y);
+    const p = this.shown;
+    this.group.position.set(p.x, 0, p.y);
   }
 
   dispose() {

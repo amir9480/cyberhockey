@@ -34,6 +34,12 @@ const CLOCK_JUMP = 50;
 const GLIDE_MAX = 6; // a correction bigger than this (table units) jumps instead of gliding
 const NEAR_ON = 1; // table units between a mallet and the puck: closer than this, the mallet is drawn at the puck's time
 const NEAR_FAR = 4; // further than this, at its own; in between, a blend
+// Your own mallet: drawn at the puck's moment when within OWN_NEAR_ON of it, in the present beyond OWN_NEAR_FAR. Wider
+// than for other mallets, and its drawn time may nearly stop, because a fast swing closes the distance quickly.
+const OWN_NEAR_ON = 1.5;
+const OWN_NEAR_FAR = 7;
+const OWN_RATE_MIN = 0.1;
+const OWN_RATE_MAX = 2.5;
 const LOOK_WINDOW = 15; // ticks either side of the drawn moment the puck's path is averaged over
 // The puck's drawn time runs at most this much slower or faster than real time, so its drawn speed is never far from
 // its true speed (a wider band lets a puck coming back off a wall visibly speed up). Measured at a 200 ms ping.
@@ -67,6 +73,8 @@ export class NetGame {
   // display
   private puckTime = new DisplayTime(0);
   private malletTime: DisplayTime[] = [];
+  /** The moment your own mallet is drawn at (the present, except near the puck). */
+  private ownTime = new DisplayTime(0, OWN_RATE_MIN, OWN_RATE_MAX);
   /** Like the puck's glide (`Match.glide`): a correction to each other mallet, fading away. */
   private malletGlide: { x: number; y: number }[] = [];
   private shown: Sample = { x: 0, y: 0, vis: true, m: [] };
@@ -129,6 +137,7 @@ export class NetGame {
     const start = this.inputTick - this.clock.depth;
     this.puckTime = new DisplayTime(start, PUCK_RATE_MIN, PUCK_RATE_MAX);
     this.malletTime = this.core.mallets.map(() => new DisplayTime(start));
+    this.ownTime = new DisplayTime(this.inputTick, OWN_RATE_MIN, OWN_RATE_MAX);
     this.malletGlide = this.core.mallets.map(() => ({ x: 0, y: 0 }));
     this.draw(0);
   }
@@ -296,6 +305,19 @@ export class NetGame {
       this.pred.sample(mt, this.scratch);
       const g = this.malletGlide[m.seat];
       m.sim.place(this.scratch.m[m.seat * 2] + g.x, this.scratch.m[m.seat * 2 + 1] + g.y);
+    }
+
+    // Your mallet: where it is now, but near the puck at the puck's moment, so your hit (or miss) is drawn as it
+    // happens instead of the mallet sweeping through a puck drawn a little in the past. It lags your hand by the
+    // puck's lag only while close to the puck, which is short near your goal and longest at mid-table.
+    const own = this.view.mallet!;
+    const ownGap = Math.hypot(own.sim.pos.x - s.x, own.sim.pos.y - s.y) - own.sim.radius - pr;
+    const ownK = s.vis ? Math.max(0, Math.min(1, (OWN_NEAR_FAR - ownGap) / (OWN_NEAR_FAR - OWN_NEAR_ON))) : 0;
+    const ot = this.ownTime.update(present + (t - present) * ownK, dt, present, oldest);
+    if (present - ot < 0.05) own.drawAt = null;
+    else {
+      this.pred.sample(ot, this.scratch);
+      own.drawAt = { x: this.scratch.m[this.seat * 2], y: this.scratch.m[this.seat * 2 + 1] };
     }
 
     for (const e of this.pred.due(t)) this.fx?.(e);

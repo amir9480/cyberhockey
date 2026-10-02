@@ -348,7 +348,7 @@ export class View {
     if (this.ball) this.ball.update(dt);
     // Everything that casts a shadow from the goal lights.
     if (this.table && this.mallet && this.ball) {
-      const casters = this.mallets.map((m) => ({ x: m.pos.x, y: m.pos.y, r: m.radius }));
+      const casters = this.mallets.map((m) => ({ x: m.shown.x, y: m.shown.y, r: m.radius }));
       // A hidden ball (between rounds) casts no shadow.
       if (this.ball.group.visible) casters.push({ x: this.ball.pos.x, y: this.ball.pos.y, r: this.ball.radius });
       this.table.setOccluders(casters);
