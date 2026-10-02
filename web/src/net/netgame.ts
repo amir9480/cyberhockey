@@ -3,7 +3,7 @@ import type { PlayerCount } from '@airhockey/shared/layout';
 import type { MatchCore, MatchEvent } from '@airhockey/shared/match';
 import { TICK } from '@airhockey/shared/net';
 import { NetClock } from '@airhockey/shared/netclock';
-import { DisplayTime, lagWeight, Predictor, type Sample } from '@airhockey/shared/predict';
+import { DisplayTime, lagWeight, pathWeight, Predictor, type Sample } from '@airhockey/shared/predict';
 import type { SeatInfo, ServerMsg } from '@airhockey/shared/protocol';
 import type { RoomSettings } from '@airhockey/shared/room';
 import type { View } from '../game/view';
@@ -34,6 +34,11 @@ const CLOCK_JUMP = 50;
 const GLIDE_MAX = 6; // a correction bigger than this (table units) jumps instead of gliding
 const NEAR_ON = 1; // table units between a mallet and the puck: closer than this, the mallet is drawn at the puck's time
 const NEAR_FAR = 4; // further than this, at its own; in between, a blend
+const LOOK_WINDOW = 15; // ticks either side of the drawn moment the puck's path is averaged over
+// The puck's drawn time runs at most this much slower or faster than real time, so its drawn speed is never far from
+// its true speed (a wider band lets a puck coming back off a wall visibly speed up). Measured at a 200 ms ping.
+const PUCK_RATE_MIN = 0.8;
+const PUCK_RATE_MAX = 1.25;
 const GLIDE_RATE = 10; // 1/s: how fast a mallet's correction fades (the puck's fades in `Match`)
 const MAX_TICKS_PER_FRAME = 60;
 
@@ -122,7 +127,7 @@ export class NetGame {
     this.state(st);
     this.pred.advance(this.inputTick);
     const start = this.inputTick - this.clock.depth;
-    this.puckTime = new DisplayTime(start);
+    this.puckTime = new DisplayTime(start, PUCK_RATE_MIN, PUCK_RATE_MAX);
     this.malletTime = this.core.mallets.map(() => new DisplayTime(start));
     this.malletGlide = this.core.mallets.map(() => ({ x: 0, y: 0 }));
     this.draw(0);
@@ -272,12 +277,10 @@ export class NetGame {
         return { m, own, x: this.scratch.m[m.seat * 2], y: this.scratch.m[m.seat * 2 + 1] };
       });
 
-    // The puck: its time depends on where it is, which depends on its time. A few rounds settle the target.
-    let target = this.puckTime.t;
-    for (let i = 0; i < 3; i++) {
-      this.pred.sample(target, this.scratch);
-      target = present - depth * lagWeight(layout, this.seat, this.scratch);
-    }
+    // The puck: drawn at a moment set by where it is, averaged along its known path around the moment drawn now (see
+    // `pathWeight`), so a wall bounce doesn't flip how fast its drawn time runs.
+    const look = Math.max(0, Math.min(LOOK_WINDOW, present - this.puckTime.t));
+    const target = present - depth * pathWeight(this.pred, this.seat, this.puckTime.t, look, this.scratch);
     const t = this.puckTime.update(target, dt, present, oldest);
     const s = this.pred.sample(t, this.shown);
     core.physics.pos.x = s.x;

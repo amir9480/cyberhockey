@@ -310,6 +310,22 @@ export function lagWeight(layout: TableLayout, seat: number, p: Vec2): number {
   return Math.max(0, Math.min(1, (r - 0.15) / 0.7));
 }
 
+/**
+ * `lagWeight` averaged along the puck's path over [t - window, t + window] ticks. The puck is drawn behind the present,
+ * so its path a little ahead of the drawn moment is already known: averaging over it spreads the change in the drawn
+ * time's rate around a wall bounce (where the puck turns from going away to coming back) instead of flipping it
+ * right at the bounce, which shows as a kick in speed. `window` must not reach past what is known (the present).
+ */
+export function pathWeight(pred: Predictor, seat: number, t: number, window: number, s: Sample): number {
+  const steps = 6;
+  let sum = 0;
+  for (let i = 0; i <= steps; i++) {
+    pred.sample(t - window + (2 * window * i) / steps, s);
+    sum += lagWeight(pred.layout, seat, s);
+  }
+  return sum / (steps + 1);
+}
+
 const RATE_SMOOTH = 0.15; // s: how quickly the drawn time's rate follows its target
 const CATCH_UP = 0.3; // s: time constant for closing the gap to the target time
 const RATE_MIN = 0.4;
@@ -326,7 +342,11 @@ export class DisplayTime {
   private follow = 1;
   private lastTarget = NaN;
 
-  constructor(t: number) {
+  constructor(
+    t: number,
+    private min = RATE_MIN,
+    private max = RATE_MAX,
+  ) {
     this.t = t;
   }
 
@@ -342,7 +362,7 @@ export class DisplayTime {
     this.rate += (want - this.rate) * a;
     // Arrive at the present gently: running into it at full rate would stop the puck's catch-up all at once.
     const room = 1 + (present - this.t) / (LANDING / TICK);
-    this.rate = Math.max(RATE_MIN, Math.min(RATE_MAX, room, this.rate));
+    this.rate = Math.max(this.min, Math.min(this.max, room, this.rate));
     this.t = Math.max(oldest, Math.min(present, this.t + this.rate * ticks));
     return this.t;
   }

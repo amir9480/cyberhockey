@@ -4,7 +4,7 @@ import { serveSpot } from '../src/layout';
 import { MatchCore } from '../src/match';
 import { FREEZE_HELD, TICK } from '../src/net';
 import { MAX_MALLET_SPEED, Physics, sweepEntry, type MalletBody } from '../src/physics';
-import { DisplayTime, lagWeight, Predictor, type Sample } from '../src/predict';
+import { DisplayTime, lagWeight, pathWeight, Predictor, type Sample } from '../src/predict';
 
 describe('binary frames', () => {
   it('round-trips a game state, hits, wall bounces and mallet input', () => {
@@ -257,6 +257,43 @@ describe('DisplayTime', () => {
     }
     return out;
   }
+
+  it('keeps a puck bouncing back off the far wall near its true speed, without a kick at the bounce', () => {
+    for (const speed of [18, 30]) {
+      const pred = new Predictor(2, 1, 0);
+      // Straight at the far end wall beside the goal, mallets out of the way.
+      pred.setAuth({ tick: 0, at: 0, freeze: 0, vis: true, p: [3.2, 0], v: [0, -speed], m: [-4, 8, -4, -8], slack: [0, 0] });
+      const depth = 34;
+      const dt = 1 / 120;
+      let now = 40;
+      // As NetGame draws the puck: path-averaged target, rate held within [0.8, 1.25].
+      const time = new DisplayTime(now - depth, 0.8, 1.25);
+      const s: Sample = { x: 0, y: 0, vis: true, m: [] };
+      const ratio: number[] = [];
+      let last: { x: number; y: number } | null = null;
+      for (let f = 0; f < 150; f++) {
+        now += dt / TICK;
+        pred.advance(Math.ceil(now));
+        const look = Math.max(0, Math.min(15, now - time.t));
+        time.update(now - depth * pathWeight(pred, 0, time.t, look, s), dt, now, now - depth - 4);
+        const p = pred.sample(time.t, s);
+        const at = { x: p.x, y: p.y };
+        pred.sample(time.t - 2, s);
+        const truth = Math.hypot(at.x - s.x, at.y - s.y) * (1 / (2 * TICK));
+        // Frames straddling the bounce have no meaningful true speed (the 2-tick chord cuts across the wall).
+        if (last && truth > speed * 0.8) ratio.push(Math.hypot(at.x - last.x, at.y - last.y) / dt / truth);
+        else ratio.push(NaN);
+        last = at;
+      }
+      const ok = ratio.filter((r) => !Number.isNaN(r));
+      expect(Math.min(...ok)).toBeGreaterThan(0.75);
+      expect(Math.max(...ok)).toBeLessThan(1.32);
+      for (let i = 7; i < ratio.length; i++) {
+        if (Number.isNaN(ratio[i]) || Number.isNaN(ratio[i - 7])) continue;
+        expect(Math.abs(Math.log(ratio[i] / ratio[i - 7]))).toBeLessThan(Math.log(1.35));
+      }
+    }
+  });
 
   it('changes the drawn speed of a free-flying puck gradually, never in a jump', () => {
     const v = drawnSpeeds(10);
