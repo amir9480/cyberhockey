@@ -1,4 +1,5 @@
 import { clampToSeat, malletHome, type TableLayout, type Vec2 } from './layout';
+import { MAX_MALLET_SPEED } from './physics';
 
 /** Radius at scale 1. */
 export const MALLET_RADIUS = 0.75;
@@ -50,17 +51,34 @@ export class SimMallet {
     this.target = this.clamp(p);
   }
 
-  /** Put the mallet somewhere without easing (a remote mallet driven by snapshots). */
+  /** Put the mallet somewhere without easing or motion (it didn't move there, it is there). */
   place(x: number, y: number) {
     this.pos.x = this.prev.x = this.target.x = x;
     this.pos.y = this.prev.y = this.target.y = y;
+  }
+
+  /** Move the mallet to (x, y) over one step: it hits the puck with that motion (a networked player's mallet). */
+  drive(x: number, y: number) {
+    this.prev.x = this.pos.x;
+    this.prev.y = this.pos.y;
+    this.pos.x = this.target.x = x;
+    this.pos.y = this.target.y = y;
   }
 
   update(dt: number) {
     this.prev.x = this.pos.x;
     this.prev.y = this.pos.y;
     const k = 1 - Math.exp(-FOLLOW * dt);
-    this.pos.x += (this.target.x - this.pos.x) * k;
-    this.pos.y += (this.target.y - this.pos.y) * k;
+    let dx = (this.target.x - this.pos.x) * k;
+    let dy = (this.target.y - this.pos.y) * k;
+    // Never faster than the physics counts a mallet's speed: a mallet can't jump over the puck in one step.
+    const d = Math.hypot(dx, dy);
+    const max = MAX_MALLET_SPEED * dt;
+    if (d > max) {
+      dx *= max / d;
+      dy *= max / d;
+    }
+    this.pos.x += dx;
+    this.pos.y += dy;
   }
 }

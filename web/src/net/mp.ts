@@ -176,8 +176,8 @@ export class Multiplayer {
       case 'hello':
         this.myId = m.id;
         break;
-      case 's':
-        this.game?.snapshot(m);
+      case 'st':
+        this.game?.state(m);
         break;
       case 'lobby':
         this.renderRoomList(m.rooms);
@@ -199,12 +199,6 @@ export class Multiplayer {
       case 'hit':
         this.game?.hit(m);
         break;
-      case 'puck':
-        this.game?.puck(m.puck);
-        break;
-      case 'pk':
-        this.game?.track(m);
-        break;
       case 'goal':
         this.game?.goal(m);
         break;
@@ -213,9 +207,6 @@ export class Multiplayer {
         break;
       case 'wall':
         this.game?.wall(m);
-        break;
-      case 'miss':
-        this.game?.miss();
         break;
       case 'over':
         this.onOver(m);

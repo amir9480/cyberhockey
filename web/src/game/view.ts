@@ -50,7 +50,7 @@ export class View {
   private localSeat = 0;
   /** Camera sits this far along this horizontal direction from the table centre. */
   private camDir: Vec2 = { x: 0, y: 1 };
-  /** Called every frame before rendering (the online driver interpolates here). */
+  /** Called every frame before rendering (the online driver predicts and places things here). */
   onFrame: ((dt: number, now: number) => void) | null = null;
   /** Rendered frames per second, refreshed twice a second. */
   fps = 0;
@@ -119,8 +119,8 @@ export class View {
 
   /**
    * Online table: every seat's mallet is built, `mallet` is the local seat's and the camera looks from its
-   * side. `seatColors[seat]` is the palette index of each seat. Every client simulates the puck; mallets
-   * other than the local one are placed by `NetGame` from snapshots.
+   * side. `seatColors[seat]` is the palette index of each seat. Mallets
+   * other than the local one, and the puck, are placed by `NetGame` from its prediction.
    */
   setupNet(players: PlayerCount, localSeat: number, seatColors: number[], settings: RoomSettings, scores: number[] = []) {
     this.players = players;

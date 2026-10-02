@@ -1,73 +1,83 @@
 import type { ClientMsg, ServerMsg } from './protocol';
 
 /**
- * Compact frames for the hot messages (mallet positions, puck positions, hits, mallet input, hit claims).
- * Everything else is JSON. Little-endian. Mallet coordinates are int16 in 1/QUANT units; puck coordinates float32.
+ * Compact frames for the hot messages (game state, hits, wall bounces, mallet input). Everything else is JSON.
+ * Little-endian. Mallet coordinates are int16 in 1/QUANT units; the puck is float32 (position and velocity).
  */
 export const QUANT = 500;
+/** Most mallet positions one input frame may carry (a stalled tab catching up sends several frames). */
+export const MAX_INPUTS = 120;
 
-const T_SNAP = 1; // s -> client
-const T_KEY = 2; // pk -> client
+const T_STATE = 1; // state -> client
 const T_HIT = 3; // hit -> client
 const T_WALL = 4; // wall -> client
 const T_IN = 0x10; // in -> server
-const T_CLAIM = 0x11; // hit -> server
 
 type Bytes = ArrayBuffer | Uint8Array;
 const view = (b: Bytes) => (b instanceof Uint8Array ? new DataView(b.buffer, b.byteOffset, b.byteLength) : new DataView(b));
 const q = (v: number) => Math.max(-32768, Math.min(32767, Math.round(v * QUANT)));
 const u8 = (v: number, max = 255) => Math.max(0, Math.min(max, Math.round(v)));
+const i8 = (v: number) => Math.max(-128, Math.min(127, Math.round(v)));
 
 /** Rounds a position the way the wire does, so both ends hold the same value. */
 export const quantize = (v: number) => q(v) / QUANT;
 
 // --- server -> client --------------------------------------------------------------
 
-/** `d`: seat, x, y triples of the mallets that moved. */
-export function encodeSnapshot(at: number, d: number[]): Uint8Array {
-  const n = Math.floor(d.length / 3);
-  const buf = new Uint8Array(10 + n * 5);
+export interface StateFrame {
+  tick: number;
+  /** Server clock (ms) when the tick was simulated. */
+  at: number;
+  /** Ticks the puck stays frozen after `tick` (countdown); FREEZE_HELD (net.ts): until further notice (pause, between rounds). */
+  freeze: number;
+  /** The puck is on the table (false between a goal and the next serve). */
+  vis: boolean;
+  p: [number, number];
+  v: [number, number];
+  /** Mallet positions x0,y0,x1,y1,… by seat. */
+  m: number[];
+  /** Per seat: how many ticks early its latest inputs arrived (negative: late), for the client's clock. */
+  slack: number[];
+}
+
+export function encodeState(s: StateFrame): Uint8Array {
+  const n = s.m.length / 2;
+  const buf = new Uint8Array(33 + n * 5);
   const v = view(buf);
-  v.setUint8(0, T_SNAP);
-  v.setFloat64(1, at, true);
-  v.setUint8(9, n);
+  v.setUint8(0, T_STATE);
+  v.setUint32(1, s.tick, true);
+  v.setFloat64(5, s.at, true);
+  v.setUint16(13, Math.min(0xffff, Math.max(0, Math.ceil(s.freeze))), true);
+  v.setUint8(15, s.vis ? 1 : 0);
+  v.setFloat32(16, s.p[0], true);
+  v.setFloat32(20, s.p[1], true);
+  v.setFloat32(24, s.v[0], true);
+  v.setFloat32(28, s.v[1], true);
+  v.setUint8(32, n);
   for (let i = 0; i < n; i++) {
-    v.setUint8(10 + i * 5, d[i * 3]);
-    v.setInt16(11 + i * 5, q(d[i * 3 + 1]), true);
-    v.setInt16(13 + i * 5, q(d[i * 3 + 2]), true);
+    v.setInt16(33 + i * 4, q(s.m[i * 2]), true);
+    v.setInt16(35 + i * 4, q(s.m[i * 2 + 1]), true);
+    v.setInt8(33 + n * 4 + i, i8(s.slack[i] ?? 127));
   }
   return buf;
 }
 
-export function encodeKey(at: number, p: [number, number]): Uint8Array {
-  const buf = new Uint8Array(17);
-  const v = view(buf);
-  v.setUint8(0, T_KEY);
-  v.setFloat64(1, at, true);
-  v.setFloat32(9, p[0], true);
-  v.setFloat32(13, p[1], true);
-  return buf;
-}
-
-export function encodeHitRelay(s: number, from: number, at: number, p: [number, number], impact: number): Uint8Array {
-  const buf = new Uint8Array(27);
+export function encodeHit(s: number, tick: number, impact: number): Uint8Array {
+  const buf = new Uint8Array(7);
   const v = view(buf);
   v.setUint8(0, T_HIT);
   v.setUint8(1, s);
-  v.setFloat64(2, from, true);
-  v.setFloat64(10, at, true);
-  v.setFloat32(18, p[0], true);
-  v.setFloat32(22, p[1], true);
-  v.setUint8(26, u8(impact * 4));
+  v.setUint32(2, tick, true);
+  v.setUint8(6, u8(impact * 4));
   return buf;
 }
 
-export function encodeWall(at: number, impact: number): Uint8Array {
-  const buf = new Uint8Array(10);
+export function encodeWall(tick: number, impact: number): Uint8Array {
+  const buf = new Uint8Array(6);
   const v = view(buf);
   v.setUint8(0, T_WALL);
-  v.setFloat64(1, at, true);
-  v.setUint8(9, u8(impact * 4));
+  v.setUint32(1, tick, true);
+  v.setUint8(5, u8(impact * 4));
   return buf;
 }
 
@@ -75,32 +85,35 @@ export function decodeServer(b: Bytes): ServerMsg | null {
   if (b.byteLength < 1) return null;
   const v = view(b);
   switch (v.getUint8(0)) {
-    case T_SNAP: {
-      if (b.byteLength < 10) return null;
-      const n = v.getUint8(9);
-      if (b.byteLength < 10 + n * 5) return null;
-      const d: number[] = [];
-      for (let i = 0; i < n; i++) d.push(v.getUint8(10 + i * 5), v.getInt16(11 + i * 5, true) / QUANT, v.getInt16(13 + i * 5, true) / QUANT);
-      return { t: 's', at: v.getFloat64(1, true), d };
-    }
-    case T_KEY: {
-      if (b.byteLength < 17) return null;
-      return { t: 'pk', at: v.getFloat64(1, true), p: [v.getFloat32(9, true), v.getFloat32(13, true)] };
-    }
-    case T_HIT: {
-      if (b.byteLength < 27) return null;
+    case T_STATE: {
+      if (b.byteLength < 33) return null;
+      const n = v.getUint8(32);
+      if (b.byteLength < 33 + n * 5) return null;
+      const m: number[] = [];
+      const slack: number[] = [];
+      for (let i = 0; i < n; i++) {
+        m.push(v.getInt16(33 + i * 4, true) / QUANT, v.getInt16(35 + i * 4, true) / QUANT);
+        slack.push(v.getInt8(33 + n * 4 + i));
+      }
       return {
-        t: 'hit',
-        s: v.getUint8(1),
-        from: v.getFloat64(2, true),
-        at: v.getFloat64(10, true),
-        p: [v.getFloat32(18, true), v.getFloat32(22, true)],
-        impact: v.getUint8(26) / 4,
+        t: 'st',
+        tick: v.getUint32(1, true),
+        at: v.getFloat64(5, true),
+        freeze: v.getUint16(13, true),
+        vis: v.getUint8(15) === 1,
+        p: [v.getFloat32(16, true), v.getFloat32(20, true)],
+        v: [v.getFloat32(24, true), v.getFloat32(28, true)],
+        m,
+        slack,
       };
     }
+    case T_HIT: {
+      if (b.byteLength < 7) return null;
+      return { t: 'hit', s: v.getUint8(1), tick: v.getUint32(2, true), i: v.getUint8(6) / 4 };
+    }
     case T_WALL: {
-      if (b.byteLength < 10) return null;
-      return { t: 'wall', at: v.getFloat64(1, true), i: v.getUint8(9) / 4 };
+      if (b.byteLength < 6) return null;
+      return { t: 'wall', tick: v.getUint32(1, true), i: v.getUint8(5) / 4 };
     }
     default:
       return null;
@@ -109,23 +122,18 @@ export function decodeServer(b: Bytes): ServerMsg | null {
 
 // --- client -> server --------------------------------------------------------------
 
-/** Where the player wants the mallet. */
-export function encodeIn(x: number, y: number): Uint8Array {
-  const buf = new Uint8Array(5);
+/** The local mallet's position at the end of ticks `tick`, `tick + 1`, …: `m` is x0,y0,x1,y1,… */
+export function encodeIn(tick: number, m: number[]): Uint8Array {
+  const n = Math.min(MAX_INPUTS, Math.floor(m.length / 2));
+  const buf = new Uint8Array(6 + n * 4);
   const v = view(buf);
   v.setUint8(0, T_IN);
-  v.setInt16(1, q(x), true);
-  v.setInt16(3, q(y), true);
-  return buf;
-}
-
-/** A touch of the puck: the time of the picture, the mallet's position and velocity. */
-export function encodeClaim(at: number, m: [number, number], w: [number, number]): Uint8Array {
-  const buf = new Uint8Array(25);
-  const v = view(buf);
-  v.setUint8(0, T_CLAIM);
-  v.setFloat64(1, at, true);
-  [m[0], m[1], w[0], w[1]].forEach((f, i) => v.setFloat32(9 + i * 4, f, true));
+  v.setUint32(1, tick, true);
+  v.setUint8(5, n);
+  for (let i = 0; i < n; i++) {
+    v.setInt16(6 + i * 4, q(m[i * 2]), true);
+    v.setInt16(8 + i * 4, q(m[i * 2 + 1]), true);
+  }
   return buf;
 }
 
@@ -133,14 +141,13 @@ export function decodeClient(b: Bytes): ClientMsg | null {
   if (b.byteLength < 1) return null;
   const v = view(b);
   switch (v.getUint8(0)) {
-    case T_IN:
-      if (b.byteLength < 5) return null;
-      return { t: 'in', x: v.getInt16(1, true) / QUANT, y: v.getInt16(3, true) / QUANT };
-    case T_CLAIM: {
-      if (b.byteLength < 25) return null;
-      const f = (i: number) => v.getFloat32(9 + i * 4, true);
-      const at = v.getFloat64(1, true);
-      return [at, f(0), f(1), f(2), f(3)].every(Number.isFinite) ? { t: 'hit', at, q: [f(0), f(1)], w: [f(2), f(3)] } : null;
+    case T_IN: {
+      if (b.byteLength < 6) return null;
+      const n = v.getUint8(5);
+      if (n > MAX_INPUTS || b.byteLength < 6 + n * 4) return null;
+      const m: number[] = [];
+      for (let i = 0; i < n; i++) m.push(v.getInt16(6 + i * 4, true) / QUANT, v.getInt16(8 + i * 4, true) / QUANT);
+      return { t: 'in', tick: v.getUint32(1, true), m };
     }
     default:
       return null;

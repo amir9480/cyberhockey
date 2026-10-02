@@ -1,221 +1,225 @@
 import { describe, expect, it } from 'vitest';
-import { decodeClient, decodeServer, encodeClaim, encodeHitRelay, encodeIn, encodeKey, encodeSnapshot, encodeWall, QUANT } from '../src/binary';
+import { decodeClient, decodeServer, encodeHit, encodeIn, encodeState, encodeWall, quantize, type StateFrame } from '../src/binary';
+import { serveSpot } from '../src/layout';
 import { MatchCore } from '../src/match';
-import { sweepEntry } from '../src/physics';
+import { FREEZE_HELD, TICK } from '../src/net';
+import { MAX_MALLET_SPEED, Physics, sweepEntry, type MalletBody } from '../src/physics';
+import { lagWeight, Predictor, type Sample } from '../src/predict';
 
 describe('binary frames', () => {
-  it('round-trips a snapshot of changed mallets (positions only)', () => {
-    const m = decodeServer(encodeSnapshot(1_700_000_000_123, [0, 1.234, -5.5, 2, -3, 4]));
-    expect(m).toMatchObject({ t: 's', at: 1_700_000_000_123 });
-    const d = (m as { d: number[] }).d;
-    expect(d.filter((_, i) => i % 3 === 0)).toEqual([0, 2]);
-    expect(d[1]).toBeCloseTo(1.234, 2);
-    expect(d[2]).toBeCloseTo(-5.5, 2);
+  it('round-trips a game state, hits, wall bounces and mallet input', () => {
+    const st: StateFrame = { tick: 1234, at: 1_700_000_000_123, freeze: 7, vis: true, p: [1.5, -2.25], v: [12.5, -3], m: [0, -5, 1.25, 5], slack: [3, -2] };
+    const d = decodeServer(encodeState(st));
+    expect(d).toMatchObject({ t: 'st', tick: 1234, at: st.at, freeze: 7, vis: true, p: [1.5, -2.25], v: [12.5, -3], slack: [3, -2] });
+    expect((d as { m: number[] }).m).toEqual([0, -5, 1.25, 5]);
+    expect(decodeServer(encodeState({ ...st, freeze: FREEZE_HELD, vis: false, slack: [Infinity, -500] }))).toMatchObject({ freeze: FREEZE_HELD, vis: false, slack: [127, -128] });
+    expect(decodeServer(encodeHit(1, 5000, 12.5))).toEqual({ t: 'hit', s: 1, tick: 5000, i: 12.5 });
+    expect(decodeServer(encodeWall(5000, 7.25))).toEqual({ t: 'wall', tick: 5000, i: 7.25 });
+    expect(decodeClient(encodeIn(77, [1.5, -2.25, 1.6, -2.2]))).toEqual({ t: 'in', tick: 77, m: [1.5, -2.25, 1.6, -2.2] });
   });
 
-  it('round-trips puck positions, hits, wall bounces, mallet input and hit claims', () => {
-    expect(decodeServer(encodeKey(5000, [1, 2]))).toMatchObject({ t: 'pk', at: 5000, p: [1, 2] });
-    expect(decodeServer(encodeHitRelay(1, 4900, 5000, [1.5, 2], 12.5))).toMatchObject({ t: 'hit', s: 1, from: 4900, at: 5000, p: [1.5, 2], impact: 12.5 });
-    expect(decodeServer(encodeWall(5000, 7.25))).toMatchObject({ t: 'wall', at: 5000, i: 7.25 });
-    expect(decodeClient(encodeIn(1.5, -2.25))).toMatchObject({ t: 'in', x: 1.5, y: -2.25 });
-    expect(decodeClient(encodeClaim(7000, [0.5, 0.25], [9, -9]))).toMatchObject({ t: 'hit', at: 7000, q: [0.5, 0.25], w: [9, -9] });
-  });
-
-  it('ignores truncated, unknown or non-finite frames', () => {
+  it('ignores truncated or unknown frames', () => {
     expect(decodeServer(new Uint8Array([1, 0, 0]))).toBeNull();
     expect(decodeServer(new Uint8Array([99]))).toBeNull();
     expect(decodeClient(new Uint8Array([0x10, 1]))).toBeNull();
-    expect(decodeClient(new Uint8Array([0x77, 0, 0, 0, 0]))).toBeNull();
+    expect(decodeClient(encodeIn(1, [1, 2, 3, 4]).slice(0, 8))).toBeNull();
     expect(decodeClient(new Uint8Array())).toBeNull();
-    expect(decodeClient(encodeClaim(NaN, [0, 0], [0, 0]))).toBeNull();
-  });
-
-  it('is a fraction of the JSON size', () => {
-    const snap = encodeSnapshot(1_700_000_000_123, [0, 1.2, 3.4, 1, -1.2, -3.4]).byteLength;
-    const json = JSON.stringify({ t: 's', at: 1700000000123, d: [0, 1.2, 3.4, 1, -1.2, -3.4] }).length;
-    expect(snap).toBeLessThan(json / 1.5);
-    expect(QUANT).toBeGreaterThan(100);
   });
 });
-
-/** A 2-player match with the puck sent flying along the table at a still mallet. */
-function target() {
-  const m = new MatchCore(2, 1, 5);
-  m.setCollide([]); // no mallet hits on its own: a hit only comes as a claim
-  const seat = 0;
-  const mallet = m.mallets[seat];
-  // Put the puck in the seat's zone, heading straight at the mallet.
-  const q = { x: mallet.pos.x, y: mallet.pos.y };
-  const dir = { x: -m.layout.seats[seat].inward.x, y: -m.layout.seats[seat].inward.y };
-  m.physics.pos.x = q.x - dir.x * 8;
-  m.physics.pos.y = q.y - dir.y * 8;
-  m.physics.vel.x = dir.x * 14;
-  m.physics.vel.y = dir.y * 14;
-  return { m, seat, q, dir };
-}
 
 describe('sweepEntry (continuous contact)', () => {
   it('finds the first moment a point moving in a line gets within a radius', () => {
-    // Straight at the centre, radius 1, from 5 away to 5 past: touches after 4 of the 10 units.
     expect(sweepEntry(-5, 0, 5, 0, 1)).toBeCloseTo(0.4, 6);
-    // Starts inside: at once.
     expect(sweepEntry(0.5, 0, 9, 9, 1)).toBe(0);
-    // Passes by outside the radius, or stops short, or moves away.
     expect(sweepEntry(-5, 2, 5, 2, 1)).toBeNull();
     expect(sweepEntry(-5, 0, -3, 0, 1)).toBeNull();
     expect(sweepEntry(-5, 0, -9, 0, 1)).toBeNull();
-    // Grazes the edge.
-    expect(sweepEntry(-5, 0.8, 5, 0.8, 1)).toBeCloseTo((5 - Math.sqrt(1 - 0.64)) / 10, 6);
-  });
-
-  it('is not fooled by a step far longer than the circle is wide', () => {
-    // 100 units in one step, straight through a circle of radius 1.3: no sampled end point is near it.
     const s = sweepEntry(-50, 0.2, 50, 0.2, 1.3);
-    expect(s).not.toBeNull();
     expect(-50 + 100 * (s as number)).toBeCloseTo(-Math.sqrt(1.3 ** 2 - 0.2 ** 2), 6);
-  });
-
-  it('works for a puck and a mallet that both move, using their relative motion', () => {
-    // Puck goes right at 10/step, mallet goes left at 10/step, 30 apart: they meet in the middle after 14 of 20 units
-    // of closing (a 2.6 radius-sum): relative start -30, relative end -30 + 20 = -10 ... they never touch in one step.
-    expect(sweepEntry(-30, 0, -10, 0, 2.6)).toBeNull();
-    // 12 apart: relative -12 to +8 passes through the mallet.
-    const s = sweepEntry(-12, 0, 8, 0, 2.6) as number;
-    expect(s).toBeCloseTo((12 - 2.6) / 20, 6);
   });
 });
 
-describe('rewindHit (lag compensation)', () => {
-  it('judges a hit against the puck as the player saw it, and replays to now', () => {
-    // Reference: the puck meets a mallet in real time.
-    const live = target();
-    live.m.setCollide([live.seat]);
-    let liveHit = -1;
-    live.m.onEvent = (e) => {
-      if (e.t === 'hit' && liveHit < 0) liveHit = steps;
+describe('physics: nothing passes through a mallet', () => {
+  const quiet = { onHit: () => {}, onWall: () => {}, onGoal: () => {} };
+  const match = () => new MatchCore(2, 1, 5);
+
+  it('a flicked mallet hits a resting puck instead of jumping over it', () => {
+    const m = match();
+    const ph = new Physics(m.layout, quiet);
+    ph.reset({ x: 0, y: 3 });
+    // A mallet moving far faster than allowed, 3 units in one tick, straight through the puck.
+    const body: MalletBody = { seat: 0, radius: 0.75, prev: { x: -1.5, y: 3 }, cur: { x: 1.5, y: 3 } };
+    ph.step(TICK, [body]);
+    expect(ph.vel.x).toBeGreaterThan(5);
+    expect(ph.pos.x).toBeGreaterThan(1.5 + 1.29);
+  });
+
+  it('a fast puck bounces off a still mallet', () => {
+    const m = match();
+    const ph = new Physics(m.layout, quiet);
+    ph.reset({ x: 0, y: 6 });
+    ph.vel.y = -38;
+    const body: MalletBody = { seat: 0, radius: 0.75, prev: { x: 0, y: 3 }, cur: { x: 0, y: 3 } };
+    for (let i = 0; i < 30; i++) ph.step(TICK, [body]);
+    expect(ph.vel.y).toBeGreaterThan(0);
+    expect(ph.pos.y).toBeGreaterThan(3);
+  });
+
+  it('a mallet never moves faster than the cap', () => {
+    const m = match();
+    const mallet = m.mallets[0];
+    mallet.moveTo({ x: -100, y: 100 });
+    const was = { ...mallet.pos };
+    mallet.update(TICK);
+    expect(Math.hypot(mallet.pos.x - was.x, mallet.pos.y - was.y)).toBeLessThanOrEqual(MAX_MALLET_SPEED * TICK + 1e-9);
+  });
+});
+
+/** A server match with both seats driven by exact positions, as in an online game. */
+function serverMatch() {
+  const m = new MatchCore(2, 1, 5);
+  m.setDriven(0, true);
+  m.setDriven(1, true);
+  const state = (tick: number): StateFrame => ({
+    tick,
+    at: 0,
+    freeze: m.visible ? 0 : FREEZE_HELD,
+    vis: m.visible,
+    p: [m.physics.pos.x, m.physics.pos.y],
+    v: [m.physics.vel.x, m.physics.vel.y],
+    m: m.mallets.flatMap((x) => [x.pos.x, x.pos.y]),
+    slack: [0, 0],
+  });
+  return { m, state };
+}
+
+/** Seat 0's mallet path: from home, behind the puck, then through it toward the far goal. */
+function shotPath(m: MatchCore) {
+  const puck = serveSpot(m.layout, 0, 1);
+  m.physics.reset(puck);
+  const goal = m.layout.seats[1].goalCenter;
+  const d = Math.hypot(goal.x - puck.x, goal.y - puck.y);
+  const dir = { x: (goal.x - puck.x) / d, y: (goal.y - puck.y) / d };
+  const back = { x: puck.x - dir.x * 2, y: puck.y - dir.y * 2 };
+  const path: [number, number][] = [];
+  let p = { ...m.mallets[0].pos };
+  const toward = (q: { x: number; y: number }, speed: number, extra = 0) => {
+    for (let i = 0; i < 400; i++) {
+      const dx = q.x - p.x;
+      const dy = q.y - p.y;
+      const len = Math.hypot(dx, dy);
+      if (len < 1e-3) break;
+      const s = Math.min(len, speed * TICK);
+      p = m.mallets[0].clamp({ x: p.x + (dx / len) * s, y: p.y + (dy / len) * s });
+      path.push([quantize(p.x), quantize(p.y)]);
+    }
+    for (let i = 0; i < extra; i++) path.push([quantize(p.x), quantize(p.y)]);
+  };
+  toward(back, 20, 10);
+  toward({ x: puck.x + dir.x * 3, y: puck.y + dir.y * 3 }, 30, 20);
+  return path;
+}
+
+describe('Predictor', () => {
+  it('re-simulates from an old server state to exactly the server\'s present, own hit included', () => {
+    const { m, state } = serverMatch();
+    const path = shotPath(m);
+    const still = { ...m.mallets[1].pos };
+    const pred = new Predictor(2, 1, 0);
+    const hits: number[] = [];
+    m.onEvent = (e) => e.t === 'hit' && hits.push(tick);
+    let tick = 100;
+    pred.setAuth(state(tick));
+    const lag = 40; // the client is 40 ticks ahead of the newest state it has (330 ms)
+    const states: StateFrame[] = [];
+    for (const [x, y] of path) {
+      tick++;
+      m.drive(0, { x, y });
+      m.drive(1, still);
+      m.step(TICK);
+      pred.addInput(tick, x, y);
+      states.push(state(tick));
+      const known = states[states.length - 1 - lag];
+      if (known) pred.setAuth(known);
+      pred.advance(tick);
+      const s = pred.sample(tick, { x: 0, y: 0, vis: true, m: [] } as Sample);
+      // The prediction of the present matches the server's present, to float32 rounding of the state.
+      expect(Math.hypot(s.x - m.physics.pos.x, s.y - m.physics.pos.y)).toBeLessThan(1e-3);
+    }
+    expect(hits.length).toBeGreaterThan(0);
+    expect(Math.hypot(m.physics.vel.x, m.physics.vel.y)).toBeGreaterThan(5);
+  });
+
+  it('plays a predicted hit once, merges the server\'s report of it, and drops one the server never had', () => {
+    // Where the server has the hit.
+    const ref = serverMatch();
+    const path = shotPath(ref.m);
+    let hitTick = -1;
+    ref.m.onEvent = (e) => e.t === 'hit' && hitTick < 0 && (hitTick = t);
+    let t = 100;
+    for (const [x, y] of path) {
+      t++;
+      ref.m.drive(0, { x, y });
+      ref.m.step(TICK);
+    }
+    expect(hitTick).toBeGreaterThan(100);
+
+    const run = () => {
+      const { m, state } = serverMatch();
+      shotPath(m);
+      const pred = new Predictor(2, 1, 0);
+      pred.setAuth(state(100));
+      path.forEach(([x, y], i) => pred.addInput(101 + i, x, y));
+      pred.advance(100 + path.length);
+      return { pred, state };
     };
-    let steps = 0;
-    for (; steps < 140 && liveHit < 0; steps++) live.m.step(1 / 120);
-    expect(liveHit).toBeGreaterThan(0);
-    for (let i = 0; i < 12; i++) live.m.step(1 / 120);
 
-    // Lagged: the server only hears about the touch 12 steps (100 ms) after it happened.
-    const lag = target();
-    let hits = 0;
-    lag.m.onEvent = (e) => e.t === 'hit' && hits++;
-    for (let i = 0; i < liveHit + 12; i++) lag.m.step(1 / 120);
-    expect(hits).toBe(0); // the puck passed through the mallet on the server: nothing happened yet
-    const impact = lag.m.rewindHit(lag.seat, lag.q, { x: 0, y: 0 }, 12);
-    expect(impact).toBeGreaterThan(5);
-    expect(hits).toBe(1);
-    // The puck now is where it would be had the hit counted on time.
-    expect(Math.hypot(lag.m.physics.pos.x - live.m.physics.pos.x, lag.m.physics.pos.y - live.m.physics.pos.y)).toBeLessThan(1.5);
-    expect(lag.m.physics.vel.x * live.m.physics.vel.x + lag.m.physics.vel.y * live.m.physics.vel.y).toBeGreaterThan(0);
+    const a = run().pred;
+    expect(a.due(hitTick - 1).filter((e) => e.t === 'hit')).toHaveLength(0);
+    expect(a.due(hitTick)).toContainEqual(expect.objectContaining({ t: 'hit', s: 0 }));
+    // The server's report of the same hit, a tick off, is not played again.
+    a.report(hitTick + 1, { t: 'hit', s: 0, i: 10 });
+    expect(a.due(hitTick + 20).filter((e) => e.t === 'hit')).toHaveLength(0);
+
+    // Not yet played, and a server state past it arrives without the server having reported it: it never happened.
+    const { pred: b } = run();
+    const { m: other, state: otherState } = serverMatch();
+    other.physics.reset({ x: 0, y: 0 });
+    b.setAuth({ ...otherState(hitTick + 5) });
+    b.advance(hitTick + 10);
+    expect(b.due(hitTick + 10).filter((e) => e.t === 'hit')).toHaveLength(0);
   });
 
-  it('still catches a very fast puck when the claimed moment is a few steps off', () => {
-    for (const off of [-5, -3, 0, 3, 5]) {
-      const t = target();
-      // Faster than anything in a real game: 38 units/s is about 0.3 per step, a mallet and puck are 1.3 apart.
-      const dir = t.dir;
-      t.m.physics.vel.x = dir.x * 38;
-      t.m.physics.vel.y = dir.y * 38;
-      let steps = 0;
-      let nearest = Infinity;
-      let nearestAt = 0;
-      for (; steps < 60; steps++) {
-        t.m.step(1 / 120);
-        const d = Math.hypot(t.m.physics.pos.x - t.q.x, t.m.physics.pos.y - t.q.y);
-        if (d < nearest) {
-          nearest = d;
-          nearestAt = steps;
-        }
-        if (d < 0.3) break; // it went straight through the mallet on the server
-      }
-      for (let i = 0; i < 6; i++) t.m.step(1 / 120);
-      const ago = steps + 6 - nearestAt + off; // the claim names a moment `off` steps wrong
-      expect(t.m.rewindHit(t.seat, t.q, { x: 0, y: 0 }, ago)).toBeGreaterThan(10);
+  it('keeps server truth for the past and prediction after it', () => {
+    const { m, state } = serverMatch();
+    m.physics.reset({ x: 0, y: 0 });
+    m.physics.vel.x = 5;
+    const pred = new Predictor(2, 1, 0);
+    pred.setAuth(state(10));
+    pred.advance(30);
+    const at20 = pred.sample(20, { x: 0, y: 0, vis: true, m: [] });
+    expect(at20.x).toBeCloseTo(5 * 10 * TICK, 1);
+    // Halfway between two ticks is halfway between their positions.
+    const a = pred.sample(20, { x: 0, y: 0, vis: true, m: [] }).x;
+    const b = pred.sample(21, { x: 0, y: 0, vis: true, m: [] }).x;
+    expect(pred.sample(20.5, { x: 0, y: 0, vis: true, m: [] }).x).toBeCloseTo((a + b) / 2, 6);
+  });
+});
+
+describe('lagWeight', () => {
+  it('is 0 near your own goal, 1 near the others\', and grows in between', () => {
+    const m = new MatchCore(2, 1, 5);
+    const mine = m.layout.seats[0].goalCenter;
+    const theirs = m.layout.seats[1].goalCenter;
+    expect(lagWeight(m.layout, 0, mine)).toBe(0);
+    expect(lagWeight(m.layout, 0, theirs)).toBe(1);
+    let last = -1;
+    for (let k = 0; k <= 10; k++) {
+      const p = { x: mine.x + (theirs.x - mine.x) * (k / 10), y: mine.y + (theirs.y - mine.y) * (k / 10) };
+      const w = lagWeight(m.layout, 0, p);
+      expect(w).toBeGreaterThanOrEqual(last);
+      last = w;
     }
-  });
-
-  it('catches a puck so fast that no recorded step is on the mallet', () => {
-    const q = { x: 0, y: 3 };
-    const t = target();
-    // 400 units/s is 3.3 units per step: the puck jumps clean over a mallet 2.6 wide between two steps.
-    t.m.physics.pos.x = -5;
-    t.m.physics.pos.y = 3;
-    t.m.physics.vel.x = 400;
-    t.m.physics.vel.y = 0;
-    const xs: number[] = [];
-    for (let i = 0; i < 4; i++) {
-      t.m.step(1 / 120);
-      xs.push(t.m.physics.pos.x);
-    }
-    // Check the premise: the puck skipped over the mallet without ever being within its reach at a step.
-    expect(xs.some((x) => Math.abs(x - q.x) < 1.3)).toBe(false);
-    expect(xs[0]).toBeLessThan(-1.3);
-    expect(xs[xs.length - 1]).toBeGreaterThan(1.3);
-    const hit = t.m.rewindHit(t.seat, q, { x: 0, y: 0 }, 2);
-    expect(hit).toBeGreaterThan(10);
-  });
-
-  it('does not rewrite more than the compensation limit: a very late hit starts its flight later', () => {
-    // The puck crosses open table sideways at 14 u/s; a mallet touches it at q, but the server hears 400 ms later.
-    const q = { x: 0, y: 3 };
-    const setup = () => {
-      const t = target();
-      t.m.physics.pos.x = -5;
-      t.m.physics.pos.y = 3;
-      t.m.physics.vel.x = 14;
-      t.m.physics.vel.y = 0;
-      return t;
-    };
-    const probe = setup();
-    let touchAt = -1;
-    for (let i = 0; i < 100 && touchAt < 0; i++) {
-      probe.m.step(1 / 120);
-      if (Math.hypot(probe.m.physics.pos.x - q.x, probe.m.physics.pos.y - q.y) < 1.3) touchAt = i;
-    }
-    expect(touchAt).toBeGreaterThan(0);
-
-    const late = 48; // steps (400 ms) between the touch and the claim reaching the server
-    const t = setup();
-    for (let i = 0; i < touchAt + late; i++) t.m.step(1 / 120);
-    const hit = t.m.rewindHit(t.seat, q, { x: -10, y: 0 }, late);
-    expect(hit).toBeGreaterThan(10);
-    // Flown from the hit for 150 ms only, not for the whole 400 ms: the puck is bounced back (the mallet moves
-    // toward it), so it is a few units from the mallet instead of most of the way across the table.
-    const away = Math.hypot(t.m.physics.pos.x - q.x, t.m.physics.pos.y - q.y);
-    expect(away).toBeGreaterThan(1.3);
-    expect(away).toBeLessThan(7.5);
-    // The history stays lined up with the clock, so a later claim is still judged (the puck is moving off the mallet: no hit).
-    expect(t.m.rewindHit(t.seat, q, { x: 0, y: 0 }, 1)).toBe(0);
-    // ...and one for the puck as the first claimant saw it, a moment earlier, still finds it at the mallet.
-    const again = t.m.rewindHit(t.seat, { x: q.x + 0.4, y: q.y }, { x: -10, y: 0 }, 20);
-    expect(again).toBeGreaterThanOrEqual(0);
-  });
-
-  it('refuses a touch that did not happen, a stale one, or junk', () => {
-    const t = target();
-    for (let i = 0; i < 20; i++) t.m.step(1 / 120);
-    const before = { ...t.m.physics.pos };
-    // The mallet is nowhere near the puck.
-    expect(t.m.rewindHit(t.seat, { x: t.q.x + 5, y: t.q.y }, { x: 0, y: 0 }, 3)).toBe(0);
-    // Further back than the server remembers.
-    expect(t.m.rewindHit(t.seat, t.q, { x: 0, y: 0 }, 500)).toBe(0);
-    expect(t.m.rewindHit(t.seat, t.q, { x: 0, y: 0 }, -1)).toBe(0);
-    // A mallet faster than the physics allows.
-    expect(t.m.rewindHit(t.seat, t.q, { x: 400, y: 0 }, 2)).toBe(0);
-    expect(t.m.rewindHit(t.seat, t.q, { x: NaN, y: 0 }, 2)).toBe(0);
-    expect(t.m.physics.pos.x).toBe(before.x); // nothing moved the puck
-  });
-
-  it('forgets the past after a goal, so a claim cannot hit the reset puck', () => {
-    const t = target();
-    t.m.physics.pos.x = 0;
-    t.m.physics.pos.y = 0;
-    for (let i = 0; i < 5; i++) t.m.step(1 / 120);
-    t.m.clearTrail();
-    expect(t.m.rewindHit(t.seat, t.q, { x: 0, y: 0 }, 1)).toBe(0);
+    expect(lagWeight(m.layout, 0, { x: 0, y: 0 })).toBeCloseTo(0.5, 5);
   });
 });

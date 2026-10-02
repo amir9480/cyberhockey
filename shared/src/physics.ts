@@ -5,10 +5,6 @@ export const PUCK_RADIUS = 0.55;
 
 const WALL_THICKNESS = 0.4;
 const SUBSTEP = 1 / 240;
-/** Free flight (no mallets) is always stepped in these exact steps, so the server and every client get identical paths. */
-export const FLIGHT_STEP = SUBSTEP;
-export const FLIGHT_STEPS_PER_MS = 0.24;
-export const FLIGHT_MS_PER_STEP = 1000 / 240;
 const WALL_BOUNCE = 0.95;
 export const MALLET_BOUNCE = 0.92;
 const DAMPING = 0.25; // 1/s, air hockey tables are nearly frictionless
@@ -53,7 +49,6 @@ export function sweepEntry(r0x: number, r0y: number, r1x: number, r1y: number, R
 /**
  * A puck touching a mallet at (mx, my) moving at (mvx, mvy): puts the puck on the mallet's rim and bounces it.
  * Returns the closing speed (> 0) when it was a hit, 0 when the puck was already moving away.
- * The server uses this same function to decide a claimed hit, so both ends get the same result.
  */
 export function bounceOff(pos: Vec2, vel: Vec2, mx: number, my: number, mvx: number, mvy: number, min: number): number {
   const dx = pos.x - mx;
@@ -116,17 +111,19 @@ export class Physics {
 
   /** Advance by `dt`; returns false once a goal is scored (the step stops there). */
   step(dt: number, mallets: MalletBody[]): boolean {
-    const n = Math.max(1, Math.ceil(dt / SUBSTEP));
+    // Rounded, not ceiled: 1/120 / (1/240) is a hair over 2 in floating point.
+    const n = Math.max(1, Math.round(dt / SUBSTEP));
     const h = dt / n;
     const damp = Math.exp(-DAMPING * h);
     for (let i = 1; i <= n; i++) {
+      const x0 = this.pos.x;
+      const y0 = this.pos.y;
       this.pos.x += this.vel.x * h;
       this.pos.y += this.vel.y * h;
       this.vel.x *= damp;
       this.vel.y *= damp;
 
-      const f = i / n;
-      for (const m of mallets) this.collideMallet(m, f, dt);
+      for (const m of mallets) this.collideMallet(m, (i - 1) / n, i / n, dt, h, x0, y0);
       this.collideWalls();
 
       const scored = this.goalAt();
@@ -138,22 +135,52 @@ export class Physics {
     return true;
   }
 
-  private collideMallet(m: MalletBody, f: number, dt: number) {
-    const mx = m.prev.x + (m.cur.x - m.prev.x) * f;
-    const my = m.prev.y + (m.cur.y - m.prev.y) * f;
-    let mvx = (m.cur.x - m.prev.x) / dt;
-    let mvy = (m.cur.y - m.prev.y) / dt;
+  /**
+   * Swept puck–mallet contact over one substep: the mallet moves from fraction `f0` to `f1` of its frame motion while
+   * the puck moves from (x0, y0) to its current position. Both move in straight lines, so the first touching moment is
+   * solved exactly; neither a fast puck nor a fast mallet can pass through the other between substeps.
+   */
+  private collideMallet(m: MalletBody, f0: number, f1: number, dt: number, h: number, x0: number, y0: number) {
+    const ex = m.cur.x - m.prev.x;
+    const ey = m.cur.y - m.prev.y;
+    const ax = m.prev.x + ex * f0;
+    const ay = m.prev.y + ey * f0;
+    const bx = m.prev.x + ex * f1;
+    const by = m.prev.y + ey * f1;
+    const min = m.radius + this.puckR;
+    const s = sweepEntry(x0 - ax, y0 - ay, this.pos.x - bx, this.pos.y - by, min);
+    if (s === null) return;
+
+    let mvx = ex / dt;
+    let mvy = ey / dt;
     const ms = Math.hypot(mvx, mvy);
     if (ms > MAX_MALLET_SPEED) {
       mvx *= MAX_MALLET_SPEED / ms;
       mvy *= MAX_MALLET_SPEED / ms;
     }
-
-    const dx = this.pos.x - mx;
-    const dy = this.pos.y - my;
-    const min = m.radius + this.puckR;
-    if (dx * dx + dy * dy >= min * min) return;
-    const impact = bounceOff(this.pos, this.vel, mx, my, mvx, mvy, min);
+    // Both at the moment of contact; bounce there, then fly the rest of the substep.
+    const cx = ax + (bx - ax) * s;
+    const cy = ay + (by - ay) * s;
+    this.pos.x = x0 + (this.pos.x - x0) * s;
+    this.pos.y = y0 + (this.pos.y - y0) * s;
+    const impact = bounceOff(this.pos, this.vel, cx, cy, mvx, mvy, min);
+    // The contact normal: the side of the mallet the puck is on.
+    const nx = (this.pos.x - cx) / min;
+    const ny = (this.pos.y - cy) / min;
+    const rest = (1 - s) * h;
+    this.pos.x += this.vel.x * rest;
+    this.pos.y += this.vel.y * rest;
+    // A mallet faster than the puck catches up with it: it pushes the puck ahead of it, on the same side.
+    const along = (this.pos.x - bx) * nx + (this.pos.y - by) * ny;
+    const dx = this.pos.x - bx;
+    const dy = this.pos.y - by;
+    if (dx * dx + dy * dy < min * min) {
+      const side = dx - along * nx;
+      const sideY = dy - along * ny;
+      const push = Math.sqrt(Math.max(0, min * min - side * side - sideY * sideY));
+      this.pos.x = bx + side + nx * push;
+      this.pos.y = by + sideY + ny * push;
+    }
     if (impact > 0) this.events.onHit(m.seat, impact);
   }
 

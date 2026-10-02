@@ -5,7 +5,6 @@ import {
   type LobbyRoom,
   type MemberInfo,
   type PauseEntry,
-  type PuckState,
   type SeatInfo,
   type ServerMsg,
 } from '@airhockey/shared/protocol';
@@ -13,18 +12,17 @@ import { DEFAULT_ROOM, PALETTE_SIZE, clampMalletScale, clampWinScore, type RoomS
 import type { Client } from './client';
 import type { ServerConfig } from './config';
 import type { Hub } from './hub';
-import { SnapshotBuilder } from './snapshot';
-import { encodeHitRelay, encodeKey, encodeWall } from '@airhockey/shared/binary';
+import { encodeHit, encodeState, encodeWall, type StateFrame } from '@airhockey/shared/binary';
+import { FREEZE_HELD, TICK, TICK_RATE } from '@airhockey/shared/net';
+import { MAX_MALLET_SPEED } from '@airhockey/shared/physics';
 
-/** The simulation steps at this rate; the puck keyframe and mallet snapshot go out every second step. */
-const SIM_RATE = 120;
-const DT = 1 / SIM_RATE;
+const DT = TICK;
+const STATE_EVERY = 2; // ticks between state broadcasts (60 a second)
 const MAX_CATCHUP = 0.1; // seconds of real time the loop simulates at most after a stall
-const MAX_COORD = 1000;
-const MAX_CLAIM_AGE = 900; // ms: a hit claim older than this is dropped (a 400 ms ping needs about 450)
-const MISS_QUIET = 600; // ms after a seat's accepted hit during which its failed claims are not reported as misses
-const MIN_CLAIM_GAP = 8; // ms between one seat's hit claims
-const MAX_MALLET_LAG = 25; // table units a claimed mallet may be from where the server has it (its input trails by a trip)
+const MAX_AHEAD = TICK_RATE * 2; // ticks: inputs further ahead than this are a broken clock, not a fast one
+const SLACK_WINDOW = TICK_RATE / 2; // ticks over which each seat's input slack is the minimum seen
+/** A driven mallet may move this far per tick (the speed cap, plus wire rounding). */
+const MAX_DRIVE_STEP = MAX_MALLET_SPEED * DT + 0.005;
 
 interface Member {
   id: string;
@@ -47,30 +45,33 @@ interface Seat {
   ai: boolean;
 }
 
-/** Something that happened in the simulation, with the server time it happened and the puck right after. */
+/** Something that happened in the simulation, with the tick it happened in and the puck right after. */
 interface Happened {
   e: MatchEvent;
-  at: number;
-  /** For a hit: the server time of the puck it was judged against (earlier than `at` for a late claim). */
-  from: number;
+  tick: number;
   p: [number, number];
 }
+
+/** A human seat's incoming mallet positions, by the tick they are for. */
+interface SeatInput {
+  pending: Map<number, [number, number]>;
+  /** Fewest ticks early an input arrived, this window and the last (negative: late). */
+  slack: number;
+  slackPrev: number;
+}
+
+const newInput = (): SeatInput => ({ pending: new Map(), slack: Infinity, slackPrev: Infinity });
 
 interface Game {
   match: MatchCore;
   seats: Seat[];
+  /** The last simulated tick. Keeps counting through pauses and countdowns, so it stays in step with the clock. */
   tick: number;
   acc: number;
   last: number;
   countdown: number;
   events: Happened[];
-  /** Set while a hit claim is judged: the time of the picture the player saw. */
-  claimFrom: number | null;
-  /** Server time (ms) of each seat's last hit claim. */
-  claimedAt: number[];
-  /** Server time (ms) of each seat's last accepted hit. */
-  hitAt: number[];
-  snaps: SnapshotBuilder;
+  inputs: SeatInput[];
   timer: ReturnType<typeof setInterval>;
   /** Players currently holding the game paused, in order. */
   paused: Set<string>;
@@ -296,24 +297,8 @@ export class Room {
         if (why) return client.error('cannot_start', why);
         return this.startGame();
       }
-      case 'in': {
-        const g = this.game;
-        if (!g || m.seat < 0 || g.seats[m.seat].ai) return;
-        const { x, y } = msg;
-        if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y)) return;
-        g.match.setTarget(m.seat, {
-          x: Math.max(-MAX_COORD, Math.min(MAX_COORD, x)),
-          y: Math.max(-MAX_COORD, Math.min(MAX_COORD, y)),
-        });
-        return;
-      }
-      case 'hit':
-        return this.onHit(m, msg);
-      case 'resync': {
-        const g = this.game;
-        if (g && m.seat >= 0) client.send({ t: 'puck', puck: this.puckState(g) });
-        return;
-      }
+      case 'in':
+        return this.onInput(m, msg);
       case 'pause':
         return this.pause(m);
       case 'resume':
@@ -361,14 +346,12 @@ export class Room {
     if (this.quick) this.autoStarted = true;
     const match = new MatchCore(seated.length as PlayerCount, this.settings.malletScale, this.settings.winScore);
     const events: Happened[] = [];
-    match.onEvent = (e) => {
-      const at = Date.now();
-      events.push({ e, at, from: g.claimFrom ?? at, p: [match.physics.pos.x, match.physics.pos.y] });
-    };
-    // Players' mallets hit the puck by their own claims (judged against the past); the server's own collisions are for AI seats.
-    match.setCollide([]);
+    match.onEvent = (e) => events.push({ e, tick: g.tick, p: [match.physics.pos.x, match.physics.pos.y] });
     for (const m of this.members.values()) m.seat = -1;
-    seated.forEach((m, i) => (m.seat = i));
+    seated.forEach((m, i) => {
+      m.seat = i;
+      match.setDriven(i, true);
+    });
     const g: Game = {
       match,
       seats: seated.map((m) => ({ id: m.id, name: m.name, color: m.color, ai: false })),
@@ -377,11 +360,8 @@ export class Room {
       last: performance.now(),
       countdown: this.cfg.countdown,
       events,
-      claimFrom: null,
-      claimedAt: seated.map(() => 0),
-      hitAt: seated.map(() => 0),
-      snaps: new SnapshotBuilder(),
-      timer: setInterval(() => this.loop(), 1000 / SIM_RATE),
+      inputs: seated.map(newInput),
+      timer: setInterval(() => this.loop(), 1000 / TICK_RATE),
       paused: new Set(),
       budgets: new Map(),
       votes: new Map(),
@@ -397,10 +377,21 @@ export class Room {
     return this.game!.seats.map((s) => ({ id: s.id, name: s.name, color: s.color, ai: s.ai }));
   }
 
-  /** The puck as the simulation has it now. */
-  private puckState(g: Game): PuckState {
-    const { pos } = g.match.physics;
-    return { at: Date.now(), p: [pos.x, pos.y], vis: g.match.visible };
+  /** The whole game after the last tick. */
+  private state(g: Game): StateFrame {
+    const { match } = g;
+    const { pos, vel } = match.physics;
+    const held = g.paused.size > 0 || !match.visible || match.done;
+    return {
+      tick: g.tick,
+      at: Date.now(),
+      freeze: held ? FREEZE_HELD : g.countdown > 0 ? Math.ceil(g.countdown / DT - 1e-6) : 0,
+      vis: match.visible,
+      p: [pos.x, pos.y],
+      v: [vel.x, vel.y],
+      m: match.mallets.flatMap((mal) => [mal.pos.x, mal.pos.y]),
+      slack: g.inputs.map((s) => Math.min(s.slack, s.slackPrev)),
+    };
   }
 
   private sendStart(m: Member) {
@@ -414,10 +405,8 @@ export class Room {
       seats: this.seatInfos(),
       settings: { ...this.settings },
       scores: [...g.match.scores],
-      puck: this.puckState(g),
-      mallets: g.match.mallets.flatMap((mal) => [mal.pos.x, mal.pos.y]),
+      state: this.state(g),
       cd,
-      thaw: cd > 0 ? Date.now() + cd * 1000 : 0,
     });
   }
 
@@ -429,38 +418,61 @@ export class Room {
     const g = this.game;
     if (!g) return;
     this.sendSeated({ t: 'seats', seats: this.seatInfos() });
-    // The server plays every seat without a human.
-    g.seats.forEach((seat, i) => g.match.setAI(i, seat.ai));
-    g.match.setCollide(g.seats.flatMap((seat, i) => (seat.ai ? [i] : [])));
+    // The server plays every seat without a human; a human's mallet goes where their positions say.
+    g.seats.forEach((seat, i) => {
+      g.match.setAI(i, seat.ai);
+      if (seat.ai !== !g.match.isDriven(i)) return;
+      g.match.setDriven(i, !seat.ai);
+      g.inputs[i] = newInput();
+    });
   }
 
-  /** A player says their mallet touched the puck as their screen showed it: judge that against the puck back then. */
-  private onHit(m: Member, msg: Extract<ClientMsg, { t: 'hit' }>) {
+  /** A player's mallet positions for upcoming ticks: kept until the tick they are for is simulated. */
+  private onInput(m: Member, msg: Extract<ClientMsg, { t: 'in' }>) {
     const g = this.game;
-    if (!g || m.seat < 0 || g.seats[m.seat].ai || g.paused.size > 0 || g.countdown > 0) return;
-    const now = Date.now();
-    const at = Math.min(Math.round(msg.at), now);
-    const ago = now - at;
-    if (now - g.claimedAt[m.seat] < MIN_CLAIM_GAP) return;
-    // A mallet pushing the puck sends a claim every few ms for what is one touch; once the first is accepted the
-    // rest find the puck already moving off, which is not a miss to tell the player about.
-    const miss = () => {
-      if (now - g.hitAt[m.seat] > MISS_QUIET) m.conn?.send({ t: 'miss' });
-    };
-    const [qx, qy] = msg.q ?? [];
-    const [wx, wy] = msg.w ?? [];
-    if (!Number.isFinite(ago) || ago > MAX_CLAIM_AGE || ![qx, qy, wx, wy].every(Number.isFinite)) return miss();
-    const mallet = g.match.mallets[m.seat];
-    const q = { x: qx, y: qy };
-    // The mallet must be inside its zone, and near where the server has it (its input trails the player's by a trip).
-    const inZone = mallet.clamp(q);
-    if (Math.hypot(inZone.x - qx, inZone.y - qy) > 0.1 || Math.hypot(qx - mallet.pos.x, qy - mallet.pos.y) > MAX_MALLET_LAG) return miss();
-    g.claimedAt[m.seat] = now;
-    g.claimFrom = at;
-    const impact = g.match.rewindHit(m.seat, q, { x: wx, y: wy }, Math.round(ago / (1000 * DT)));
-    g.claimFrom = null;
-    if (impact) g.hitAt[m.seat] = now;
-    else miss();
+    if (!g || m.seat < 0 || g.seats[m.seat].ai) return;
+    const { tick, m: pos } = msg;
+    if (!Number.isInteger(tick) || !Array.isArray(pos) || pos.length < 2 || pos.length % 2) return;
+    const inp = g.inputs[m.seat];
+    // The first of these is needed soonest: how early it came is what the client tunes its clock by.
+    inp.slack = Math.min(inp.slack, tick - (g.tick + 1));
+    for (let i = 0; i + 1 < pos.length; i += 2) {
+      const t = tick + i / 2;
+      const x = pos[i];
+      const y = pos[i + 1];
+      if (t <= g.tick || t > g.tick + MAX_AHEAD || !Number.isFinite(x) || !Number.isFinite(y)) continue;
+      inp.pending.set(t, [x, y]);
+    }
+    // Late: those ticks are gone, but the newest position still tells where the mallet is now.
+    const last = tick + pos.length / 2 - 1;
+    if (last <= g.tick) inp.pending.set(g.tick + 1, [pos[pos.length - 2], pos[pos.length - 1]]);
+  }
+
+  /** Each human mallet's position for this tick: inside its zone and no faster than any mallet can move. */
+  private feedInputs(g: Game) {
+    g.inputs.forEach((inp, seat) => {
+      if (!g.match.isDriven(seat)) return;
+      const p = inp.pending.get(g.tick);
+      for (const t of inp.pending.keys()) if (t <= g.tick) inp.pending.delete(t);
+      if (g.tick % SLACK_WINDOW === 0) {
+        inp.slackPrev = inp.slack;
+        inp.slack = Infinity;
+      }
+      if (!p || !Number.isFinite(p[0]) || !Number.isFinite(p[1])) return; // no news: it stands still
+      const mallet = g.match.mallets[seat];
+      let x = p[0];
+      let y = p[1];
+      const c = mallet.clamp({ x, y });
+      if (Math.hypot(c.x - x, c.y - y) > 0.01) ({ x, y } = c);
+      const dx = x - mallet.pos.x;
+      const dy = y - mallet.pos.y;
+      const d = Math.hypot(dx, dy);
+      if (d > MAX_DRIVE_STEP) {
+        x = mallet.pos.x + (dx / d) * MAX_DRIVE_STEP;
+        y = mallet.pos.y + (dy / d) * MAX_DRIVE_STEP;
+      }
+      g.match.drive(seat, { x, y });
+    });
   }
 
   private loop() {
@@ -469,20 +481,21 @@ export class Room {
     const now = performance.now();
     const elapsed = (now - g.last) / 1000;
     g.last = now;
-    if (g.paused.size > 0) {
-      g.acc = 0;
-      this.drainBudgets(g, elapsed);
-      return;
-    }
+    if (g.paused.size > 0) this.drainBudgets(g, elapsed);
     g.acc = Math.min(g.acc + elapsed, MAX_CATCHUP);
     while (g.acc >= DT) {
       g.acc -= DT;
-      if (g.countdown > 0) {
+      g.tick++;
+      this.feedInputs(g);
+      // Paused or counting down: mallets move, the puck stands still.
+      if (g.paused.size > 0) g.match.moveMallets(DT);
+      else if (g.countdown > 0) {
         g.countdown = Math.max(0, g.countdown - DT);
         g.match.moveMallets(DT);
       } else g.match.step(DT);
-      g.tick++;
-      if (g.tick % 2 === 0) this.broadcast(g);
+      // Events first: a client takes a predicted hit the state comes without as one that didn't happen.
+      this.flush(g);
+      if (g.tick % STATE_EVERY === 0) this.sendSeated(encodeState(this.state(g)));
       if (g.match.done) {
         this.flush(g);
         this.endGame('score', g.match.winner);
@@ -492,25 +505,14 @@ export class Room {
     this.flush(g);
   }
 
-  /** The puck and the mallets that moved, to everyone seated. */
-  private broadcast(g: Game) {
-    const now = Date.now();
-    if (g.match.visible && g.countdown <= 0) {
-      const { pos } = g.match.physics;
-      this.sendSeated(encodeKey(now, [pos.x, pos.y]));
-    }
-    const snap = g.snaps.build(now, g.match.mallets);
-    if (snap) this.sendSeated(snap);
-  }
-
   /** What happened since the last flush: hits, loud wall bounces, goals, serves. */
   private flush(g: Game) {
     for (const h of g.events.splice(0)) {
       const e = h.e;
-      if (e.t === 'hit') this.sendSeated(encodeHitRelay(e.s, h.from, h.at, h.p, e.i));
-      else if (e.t === 'wall') this.sendSeated(encodeWall(h.at, e.i));
-      else if (e.t === 'goal') this.sendSeated({ t: 'goal', s: e.s, c: e.c, sc: e.sc, at: h.at });
-      else if (e.t === 'serve') this.sendSeated({ t: 'serve', s: e.s, p: h.p, at: h.at });
+      if (e.t === 'hit') this.sendSeated(encodeHit(e.s, h.tick, e.i));
+      else if (e.t === 'wall') this.sendSeated(encodeWall(h.tick, e.i));
+      else if (e.t === 'goal') this.sendSeated({ t: 'goal', s: e.s, c: e.c, sc: e.sc, tick: h.tick });
+      else if (e.t === 'serve') this.sendSeated({ t: 'serve', s: e.s, p: h.p, tick: h.tick });
     }
   }
 
@@ -621,9 +623,6 @@ export class Room {
   /** After the last pause ends: countdown before the puck moves again. Returns its length in seconds. */
   private restartClock(g: Game) {
     g.countdown = this.cfg.countdown;
-    g.acc = 0;
-    g.last = performance.now();
-    g.match.clearTrail();
     return this.cfg.countdown;
   }
 
@@ -668,7 +667,7 @@ export class Room {
   }
 
   private pauseChanged(g: Game, cd = 0) {
-    this.sendSeated({ t: 'pause', paused: this.pauseEntries(g), cd, thaw: cd > 0 ? Date.now() + cd * 1000 : 0, puck: this.puckState(g) });
+    this.sendSeated({ t: 'pause', paused: this.pauseEntries(g), cd });
     this.evaluateKicks(g);
   }
 
