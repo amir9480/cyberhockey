@@ -2,7 +2,7 @@ import { clampToSeat, malletHome, type TableLayout, type Vec2 } from './layout';
 
 /** Radius at scale 1. */
 export const MALLET_RADIUS = 0.75;
-const WALL = 0.4 + 0.1; // wall thickness + small gap
+export const MALLET_WALL = 0.4 + 0.1; // wall thickness + small gap
 const FOLLOW = 45; // 1/s, how tightly the mallet chases its target
 
 /** A seat's mallet without any rendering: position, easing toward a target and the zone clamp. */
@@ -32,7 +32,7 @@ export class SimMallet {
   }
 
   clamp(p: Vec2): Vec2 {
-    return clampToSeat(this.layout, this.seat, p, this.radius, WALL);
+    return clampToSeat(this.layout, this.seat, p, this.radius, MALLET_WALL);
   }
 
   /** Resize the mallet; keeps it inside its zone. */

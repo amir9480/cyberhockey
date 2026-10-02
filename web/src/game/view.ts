@@ -3,8 +3,8 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
-import { buildLayout, type PlayerCount, type Vec2 } from '@airhockey/shared/layout';
-import { SimMallet } from '@airhockey/shared/mallet';
+import type { PlayerCount, Vec2 } from '@airhockey/shared/layout';
+import type { SimMallet } from '@airhockey/shared/mallet';
 import { createTable, WALL_HEIGHT, type Table } from './table';
 import { Mallet } from './mallet';
 import { DEFAULT_ROOM, clampMalletScale, clampWinScore, type RoomSettings } from '@airhockey/shared/room';
@@ -13,7 +13,6 @@ import { Ball } from './ball';
 import { Match } from './match';
 import type { Difficulty } from '@airhockey/shared/ai';
 import { WinEffect } from './effects';
-import { GameFx } from './gamefx';
 import { setSeatColors } from './colors';
 import { Sound } from './sound';
 
@@ -45,10 +44,8 @@ export class View {
   /** Every seat's mallet, by seat (the local one included). */
   mallets: Mallet[] = [];
   ball: Ball | null = null;
-  /** Single-player game; null online, where the server simulates. */
+  /** The running game: single player, or the local copy of an online one (the server validates it). */
   match: Match | null = null;
-  /** Online: routes game events to sound/effects. */
-  netFx: GameFx | null = null;
   /** The seat shown at the bottom of the screen. */
   private localSeat = 0;
   /** Camera sits this far along this horizontal direction from the table centre. */
@@ -122,8 +119,8 @@ export class View {
 
   /**
    * Online table: every seat's mallet is built, `mallet` is the local seat's and the camera looks from its
-   * side. `seatColors[seat]` is the palette index of each seat. Mallets other than the local one are placed
-   * by `NetGame` from snapshots.
+   * side. `seatColors[seat]` is the palette index of each seat. Every client simulates the puck; mallets
+   * other than the local one are placed by `NetGame` from snapshots.
    */
   setupNet(players: PlayerCount, localSeat: number, seatColors: number[], settings: RoomSettings, scores: number[] = []) {
     this.players = players;
@@ -140,9 +137,10 @@ export class View {
     this.scores = new Scoreboard(this.table.layout, this.fx.uniforms);
     this.scene.add(this.scores.group);
     scores.forEach((v, s) => this.scores?.setScore(s, v));
-    this.netFx = new GameFx(this.ball, this.scores, this.fx, this.sound, localSeat);
-    const layout = buildLayout(players);
-    this.addMallets(layout.seats.map((st) => new SimMallet(layout, st.index, settings.malletScale)));
+    this.match = new Match(this.ball, this.scores, this.difficulty, this.fx, this.sound, players, settings.malletScale, settings.winScore, {
+      localSeat,
+    });
+    this.addMallets(this.match.core.mallets);
     this.finishSetup();
   }
 
@@ -158,7 +156,6 @@ export class View {
     this.mallets = [];
     this.mallet = null;
     this.match = null;
-    this.netFx = null;
     if (this.ball) {
       this.scene.remove(this.ball.group);
       this.ball.dispose();
@@ -327,9 +324,7 @@ export class View {
       this.acc += dt;
       let steps = 0;
       while (this.acc >= SIM_STEP && steps < MAX_STEPS) {
-        // Single player simulates everything; online only the local mallet is predicted.
-        if (this.match) this.match.update(SIM_STEP);
-        else this.mallet?.sim.update(SIM_STEP);
+        this.match?.update(SIM_STEP);
         this.acc -= SIM_STEP;
         steps++;
       }

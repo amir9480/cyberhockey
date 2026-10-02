@@ -1,17 +1,25 @@
-import type { MatchCore, MatchEvent } from '@airhockey/shared/match';
+import { encodeSnapshot, quantize } from '@airhockey/shared/binary';
+import type { SimMallet } from '@airhockey/shared/mallet';
 
-const f3 = (v: number) => v.toFixed(3);
+const FULL_EVERY = 60; // snapshots; a full one now and then heals anything a client missed
 
-/** Builds the snapshot JSON by hand: it is sent 60 times a second per room. */
-export function buildSnapshot(tick: number, match: MatchCore, countdown: number, events: MatchEvent[]): string {
-  const { pos } = match.physics;
-  let m = '';
-  for (let i = 0; i < match.mallets.length; i++) {
-    const p = match.mallets[i].pos;
-    m += (i ? ',' : '') + f3(p.x) + ',' + f3(p.y);
+/** Builds mallet snapshots with only the mallets that moved since the last one. */
+export class SnapshotBuilder {
+  private last: ({ x: number; y: number } | null)[] = [];
+  private count = 0;
+
+  /** Null when nothing changed. */
+  build(now: number, mallets: SimMallet[]): Uint8Array | null {
+    const full = this.count++ % FULL_EVERY === 0;
+    const d: number[] = [];
+    mallets.forEach((m, i) => {
+      const cur = { x: quantize(m.pos.x), y: quantize(m.pos.y) };
+      const prev = this.last[i];
+      if (full || !prev || prev.x !== cur.x || prev.y !== cur.y) {
+        d.push(i, cur.x, cur.y);
+        this.last[i] = cur;
+      }
+    });
+    return d.length ? encodeSnapshot(now, d) : null;
   }
-  let s = `{"t":"s","n":${tick},"b":[${f3(pos.x)},${f3(pos.y)}],"v":${match.visible ? 1 : 0},"m":[${m}]`;
-  if (countdown > 0) s += `,"cd":${countdown.toFixed(2)}`;
-  if (events.length) s += `,"e":${JSON.stringify(events)}`;
-  return s + '}';
 }

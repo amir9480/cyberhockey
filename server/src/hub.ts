@@ -18,7 +18,7 @@ export class Hub {
   handle(client: Client, msg: ClientMsg) {
     switch (msg.t) {
       case 'ping':
-        client.send({ t: 'pong', c: Number(msg.c) || 0 });
+        client.send({ t: 'pong', c: Number(msg.c) || 0, st: Date.now() });
         return;
       case 'name':
         client.name = cleanName(msg.name);

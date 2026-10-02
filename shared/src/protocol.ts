@@ -1,9 +1,6 @@
 import type { PlayerCount } from './layout';
-import type { MatchEvent } from './match';
 import type { RoomSettings } from './room';
 
-/** Server simulation rate; snapshot `n` counts ticks of 1/TICK_RATE seconds. */
-export const TICK_RATE = 120;
 export const ROOM_ID_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
 export const ROOM_ID_LENGTH = 8;
 export const NAME_MAX = 16;
@@ -34,7 +31,15 @@ export type ClientMsg =
   | { t: 'settings'; public?: boolean; winScore?: number; malletScale?: number }
   | { t: 'kick'; id: string }
   | { t: 'start' }
+  /** Where this player wants the mallet (the server's mallet eases toward it). */
   | { t: 'in'; x: number; y: number }
+  /**
+   * This player's mallet touched the puck as drawn on their screen, which shows server time `at` (ms): the mallet's
+   * position `q` and velocity `w` then. The server rewinds the puck to that time and judges the touch itself.
+   */
+  | { t: 'hit'; at: number; q: [number, number]; w: [number, number] }
+  /** Ask for the server's puck now (after a goal here that the server hasn't confirmed). */
+  | { t: 'resync' }
   | { t: 'pause' }
   | { t: 'resume' }
   | { t: 'vote'; id: string };
@@ -92,7 +97,7 @@ export type LeftReason = 'kicked' | 'closed' | 'replaced' | 'left';
 
 export type ServerMsg =
   | { t: 'hello'; id: string; token: string }
-  | { t: 'pong'; c: number }
+  | { t: 'pong'; c: number; st: number }
   | { t: 'error'; code: ErrorCode; msg: string }
   | { t: 'lobby'; rooms: LobbyRoom[] }
   | {
@@ -110,24 +115,58 @@ export type ServerMsg =
       members: MemberInfo[];
     }
   | { t: 'left'; reason: LeftReason }
-  | { t: 'start'; players: PlayerCount; seat: number; seats: SeatInfo[]; settings: RoomSettings; scores: number[] }
+  | {
+      t: 'start';
+      players: PlayerCount;
+      seat: number;
+      seats: SeatInfo[];
+      settings: RoomSettings;
+      scores: number[];
+      puck: PuckState;
+      /** Mallet positions, x0,y0,x1,y1,… by seat. */
+      mallets: number[];
+      /** Countdown still to run, seconds. */
+      cd: number;
+      /** Server time (ms) when the puck is let go after the countdown, or 0. */
+      thaw: number;
+    }
+  /**
+   * A mallet hit the puck. The server worked it out at server time `at` (ms) from the puck as it was at `from` (earlier
+   * when it judged a late claim); `p` is the puck at `at`, after the hit. Binary on the wire.
+   */
+  | { t: 'hit'; s: number; from: number; at: number; p: [number, number]; impact: number }
+  /** The server judged a hit claim of yours a miss: the ball goes on as the server's positions have it. */
+  | { t: 'miss' }
+  /** The puck bounced off a wall hard enough to hear. */
+  | { t: 'wall'; at: number; i: number }
+  /** The server's puck on request, or frozen during a pause. */
+  | { t: 'puck'; puck: PuckState }
+  /** The server's puck position at server time `at` (ms), about 60 times a second. Binary on the wire. */
+  | { t: 'pk'; at: number; p: [number, number] }
+  /** `at`: server time (ms) of the goal / serve. */
+  | { t: 'goal'; s: number; c: number; sc: number[]; at: number }
+  | { t: 'serve'; s: number; p: [number, number]; at: number }
   | { t: 'seats'; seats: SeatInfo[] }
-  | { t: 'pause'; paused: PauseEntry[] }
+  /** `cd` > 0: nobody is paused any more, count down this many seconds before play resumes. */
+  | { t: 'pause'; paused: PauseEntry[]; cd: number; thaw: number; puck: PuckState }
   | Snapshot
   | { t: 'over'; winner: number; scores: number[]; seats: SeatInfo[]; reason: 'score' | 'forfeit' };
 
-/** 60/s state for seated players. Built by hand on the server (hot path). */
+/** The puck as of server time `at` (ms). */
+export interface PuckState {
+  at: number;
+  p: [number, number];
+  /** False while it is hidden between rounds. */
+  vis: boolean;
+}
+
+/**
+ * Mallets that moved since the last snapshot, about 60 times a second.
+ * `d` is `seat, x, y` triples. Binary on the wire.
+ */
 export interface Snapshot {
   t: 's';
-  /** Server tick; time = n / TICK_RATE. */
-  n: number;
-  /** Puck position. */
-  b: [number, number];
-  /** 1 while the puck is in play, 0 while hidden between rounds. */
-  v: 0 | 1;
-  /** Mallet positions, x0,y0,x1,y1,… by seat. */
-  m: number[];
-  /** Seconds left of the countdown, when one runs. */
-  cd?: number;
-  e?: MatchEvent[];
+  /** Server time, ms. */
+  at: number;
+  d: number[];
 }

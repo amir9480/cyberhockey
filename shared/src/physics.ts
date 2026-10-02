@@ -5,11 +5,15 @@ export const PUCK_RADIUS = 0.55;
 
 const WALL_THICKNESS = 0.4;
 const SUBSTEP = 1 / 240;
+/** Free flight (no mallets) is always stepped in these exact steps, so the server and every client get identical paths. */
+export const FLIGHT_STEP = SUBSTEP;
+export const FLIGHT_STEPS_PER_MS = 0.24;
+export const FLIGHT_MS_PER_STEP = 1000 / 240;
 const WALL_BOUNCE = 0.95;
-const MALLET_BOUNCE = 0.92;
+export const MALLET_BOUNCE = 0.92;
 const DAMPING = 0.25; // 1/s, air hockey tables are nearly frictionless
-const MAX_SPEED = 38;
-const MAX_MALLET_SPEED = 55; // ignore absurd flicks when transferring momentum
+export const MAX_SPEED = 38;
+export const MAX_MALLET_SPEED = 55; // ignore absurd flicks when transferring momentum
 
 export interface MalletBody {
   seat: number;
@@ -24,6 +28,52 @@ export interface PhysicsEvents {
   onHit(seat: number, impact: number): void;
   onWall(impact: number): void;
   onGoal(seat: number): void;
+}
+
+/**
+ * Continuous collision test. A point moves in a straight line from offset (r0x, r0y) to (r1x, r1y) relative to the
+ * centre of a circle of radius `R` (use relative positions when both move: the puck's minus the mallet's). Returns
+ * the first moment `s` in [0, 1] it is within `R` of the centre (0 if it starts inside), or null if it never is.
+ * Solves |r0 + s (r1 - r0)| = R, so a fast puck can't step over a mallet between two positions.
+ */
+export function sweepEntry(r0x: number, r0y: number, r1x: number, r1y: number, R: number): number | null {
+  if (r0x * r0x + r0y * r0y <= R * R) return 0;
+  const dx = r1x - r0x;
+  const dy = r1y - r0y;
+  const a = dx * dx + dy * dy;
+  if (a < 1e-12) return null;
+  const b = 2 * (r0x * dx + r0y * dy);
+  const c = r0x * r0x + r0y * r0y - R * R;
+  const disc = b * b - 4 * a * c;
+  if (disc < 0) return null;
+  const s = (-b - Math.sqrt(disc)) / (2 * a);
+  return s >= 0 && s <= 1 ? s : null;
+}
+
+/**
+ * A puck touching a mallet at (mx, my) moving at (mvx, mvy): puts the puck on the mallet's rim and bounces it.
+ * Returns the closing speed (> 0) when it was a hit, 0 when the puck was already moving away.
+ * The server uses this same function to decide a claimed hit, so both ends get the same result.
+ */
+export function bounceOff(pos: Vec2, vel: Vec2, mx: number, my: number, mvx: number, mvy: number, min: number): number {
+  const dx = pos.x - mx;
+  const dy = pos.y - my;
+  const d = Math.hypot(dx, dy);
+  // Exactly overlapping: push up the table.
+  const nx = d > 1e-6 ? dx / d : 0;
+  const ny = d > 1e-6 ? dy / d : -1;
+  pos.x = mx + nx * min;
+  pos.y = my + ny * min;
+  const vn = (vel.x - mvx) * nx + (vel.y - mvy) * ny;
+  if (vn >= 0) return 0;
+  vel.x -= (1 + MALLET_BOUNCE) * vn * nx;
+  vel.y -= (1 + MALLET_BOUNCE) * vn * ny;
+  const sp = Math.hypot(vel.x, vel.y);
+  if (sp > MAX_SPEED) {
+    vel.x *= MAX_SPEED / sp;
+    vel.y *= MAX_SPEED / sp;
+  }
+  return -vn;
 }
 
 const dot = (ax: number, ay: number, bx: number, by: number) => ax * bx + ay * by;
@@ -102,30 +152,9 @@ export class Physics {
     const dx = this.pos.x - mx;
     const dy = this.pos.y - my;
     const min = m.radius + this.puckR;
-    const d2 = dx * dx + dy * dy;
-    if (d2 >= min * min) return;
-    const d = Math.sqrt(d2);
-    // Exactly overlapping: push along the mallet's motion (or up the table).
-    const nx = d > 1e-6 ? dx / d : 0;
-    const ny = d > 1e-6 ? dy / d : -1;
-    this.pos.x = mx + nx * min;
-    this.pos.y = my + ny * min;
-
-    const vn = dot(this.vel.x - mvx, this.vel.y - mvy, nx, ny);
-    if (vn < 0) {
-      this.vel.x -= (1 + MALLET_BOUNCE) * vn * nx;
-      this.vel.y -= (1 + MALLET_BOUNCE) * vn * ny;
-      this.clampSpeed();
-      this.events.onHit(m.seat, -vn);
-    }
-  }
-
-  private clampSpeed() {
-    const s = Math.hypot(this.vel.x, this.vel.y);
-    if (s > MAX_SPEED) {
-      this.vel.x *= MAX_SPEED / s;
-      this.vel.y *= MAX_SPEED / s;
-    }
+    if (dx * dx + dy * dy >= min * min) return;
+    const impact = bounceOff(this.pos, this.vel, mx, my, mvx, mvy, min);
+    if (impact > 0) this.events.onHit(m.seat, impact);
   }
 
   private collideWalls() {

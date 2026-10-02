@@ -1,11 +1,11 @@
 import type { PlayerCount } from '@airhockey/shared/layout';
 import { MatchCore, type MatchEvent } from '@airhockey/shared/match';
 import {
-  TICK_RATE,
   type ClientMsg,
   type LobbyRoom,
   type MemberInfo,
   type PauseEntry,
+  type PuckState,
   type SeatInfo,
   type ServerMsg,
 } from '@airhockey/shared/protocol';
@@ -13,11 +13,18 @@ import { DEFAULT_ROOM, PALETTE_SIZE, clampMalletScale, clampWinScore, type RoomS
 import type { Client } from './client';
 import type { ServerConfig } from './config';
 import type { Hub } from './hub';
-import { buildSnapshot } from './snapshot';
+import { SnapshotBuilder } from './snapshot';
+import { encodeHitRelay, encodeKey, encodeWall } from '@airhockey/shared/binary';
 
-const DT = 1 / TICK_RATE;
+/** The simulation steps at this rate; the puck keyframe and mallet snapshot go out every second step. */
+const SIM_RATE = 120;
+const DT = 1 / SIM_RATE;
 const MAX_CATCHUP = 0.1; // seconds of real time the loop simulates at most after a stall
 const MAX_COORD = 1000;
+const MAX_CLAIM_AGE = 900; // ms: a hit claim older than this is dropped (a 400 ms ping needs about 450)
+const MISS_QUIET = 600; // ms after a seat's accepted hit during which its failed claims are not reported as misses
+const MIN_CLAIM_GAP = 8; // ms between one seat's hit claims
+const MAX_MALLET_LAG = 25; // table units a claimed mallet may be from where the server has it (its input trails by a trip)
 
 interface Member {
   id: string;
@@ -40,6 +47,15 @@ interface Seat {
   ai: boolean;
 }
 
+/** Something that happened in the simulation, with the server time it happened and the puck right after. */
+interface Happened {
+  e: MatchEvent;
+  at: number;
+  /** For a hit: the server time of the puck it was judged against (earlier than `at` for a late claim). */
+  from: number;
+  p: [number, number];
+}
+
 interface Game {
   match: MatchCore;
   seats: Seat[];
@@ -47,7 +63,14 @@ interface Game {
   acc: number;
   last: number;
   countdown: number;
-  events: MatchEvent[];
+  events: Happened[];
+  /** Set while a hit claim is judged: the time of the picture the player saw. */
+  claimFrom: number | null;
+  /** Server time (ms) of each seat's last hit claim. */
+  claimedAt: number[];
+  /** Server time (ms) of each seat's last accepted hit. */
+  hitAt: number[];
+  snaps: SnapshotBuilder;
   timer: ReturnType<typeof setInterval>;
   /** Players currently holding the game paused, in order. */
   paused: Set<string>;
@@ -144,7 +167,6 @@ export class Room {
         const seat = g.seats[m.seat];
         seat.ai = false;
         seat.name = m.name;
-        g.match.setAI(m.seat, false);
         seated = true;
       } else {
         m.seat = -1;
@@ -181,7 +203,6 @@ export class Room {
     if (this.hostId === id) this.transferHost();
     if (this.game && m.seat >= 0) {
       this.game.seats[m.seat].ai = true;
-      this.game.match.setAI(m.seat, true);
       if (reason === 'kicked') this.game.seatBanned.add(id);
       this.afterSeatLoss();
     } else this.changed();
@@ -203,7 +224,6 @@ export class Room {
     if (this.game && m.seat >= 0) {
       // Seated players stay members until the game ends, so they can come back to their seat.
       this.game.seats[m.seat].ai = true;
-      this.game.match.setAI(m.seat, true);
       this.afterSeatLoss();
       return;
     }
@@ -287,6 +307,13 @@ export class Room {
         });
         return;
       }
+      case 'hit':
+        return this.onHit(m, msg);
+      case 'resync': {
+        const g = this.game;
+        if (g && m.seat >= 0) client.send({ t: 'puck', puck: this.puckState(g) });
+        return;
+      }
       case 'pause':
         return this.pause(m);
       case 'resume':
@@ -333,8 +360,13 @@ export class Room {
     if (seated.length < 2) return;
     if (this.quick) this.autoStarted = true;
     const match = new MatchCore(seated.length as PlayerCount, this.settings.malletScale, this.settings.winScore);
-    const events: MatchEvent[] = [];
-    match.onEvent = (e) => events.push(e);
+    const events: Happened[] = [];
+    match.onEvent = (e) => {
+      const at = Date.now();
+      events.push({ e, at, from: g.claimFrom ?? at, p: [match.physics.pos.x, match.physics.pos.y] });
+    };
+    // Players' mallets hit the puck by their own claims (judged against the past); the server's own collisions are for AI seats.
+    match.setCollide([]);
     for (const m of this.members.values()) m.seat = -1;
     seated.forEach((m, i) => (m.seat = i));
     const g: Game = {
@@ -345,7 +377,11 @@ export class Room {
       last: performance.now(),
       countdown: this.cfg.countdown,
       events,
-      timer: setInterval(() => this.loop(), 1000 / TICK_RATE),
+      claimFrom: null,
+      claimedAt: seated.map(() => 0),
+      hitAt: seated.map(() => 0),
+      snaps: new SnapshotBuilder(),
+      timer: setInterval(() => this.loop(), 1000 / SIM_RATE),
       paused: new Set(),
       budgets: new Map(),
       votes: new Map(),
@@ -361,9 +397,16 @@ export class Room {
     return this.game!.seats.map((s) => ({ id: s.id, name: s.name, color: s.color, ai: s.ai }));
   }
 
+  /** The puck as the simulation has it now. */
+  private puckState(g: Game): PuckState {
+    const { pos } = g.match.physics;
+    return { at: Date.now(), p: [pos.x, pos.y], vis: g.match.visible };
+  }
+
   private sendStart(m: Member) {
     const g = this.game;
     if (!g || m.seat < 0) return;
+    const cd = g.paused.size ? 0 : g.countdown;
     m.conn?.send({
       t: 'start',
       players: g.seats.length as PlayerCount,
@@ -371,16 +414,53 @@ export class Room {
       seats: this.seatInfos(),
       settings: { ...this.settings },
       scores: [...g.match.scores],
+      puck: this.puckState(g),
+      mallets: g.match.mallets.flatMap((mal) => [mal.pos.x, mal.pos.y]),
+      cd,
+      thaw: cd > 0 ? Date.now() + cd * 1000 : 0,
     });
   }
 
-  private sendSeated(msg: ServerMsg | string) {
-    for (const m of this.members.values()) if (m.online && m.seat >= 0) m.conn?.send(msg);
+  private sendSeated(msg: ServerMsg | string | Uint8Array, except?: string) {
+    for (const m of this.members.values()) if (m.online && m.seat >= 0 && m.id !== except) m.conn?.send(msg);
   }
 
   private broadcastSeats() {
-    if (!this.game) return;
+    const g = this.game;
+    if (!g) return;
     this.sendSeated({ t: 'seats', seats: this.seatInfos() });
+    // The server plays every seat without a human.
+    g.seats.forEach((seat, i) => g.match.setAI(i, seat.ai));
+    g.match.setCollide(g.seats.flatMap((seat, i) => (seat.ai ? [i] : [])));
+  }
+
+  /** A player says their mallet touched the puck as their screen showed it: judge that against the puck back then. */
+  private onHit(m: Member, msg: Extract<ClientMsg, { t: 'hit' }>) {
+    const g = this.game;
+    if (!g || m.seat < 0 || g.seats[m.seat].ai || g.paused.size > 0 || g.countdown > 0) return;
+    const now = Date.now();
+    const at = Math.min(Math.round(msg.at), now);
+    const ago = now - at;
+    if (now - g.claimedAt[m.seat] < MIN_CLAIM_GAP) return;
+    // A mallet pushing the puck sends a claim every few ms for what is one touch; once the first is accepted the
+    // rest find the puck already moving off, which is not a miss to tell the player about.
+    const miss = () => {
+      if (now - g.hitAt[m.seat] > MISS_QUIET) m.conn?.send({ t: 'miss' });
+    };
+    const [qx, qy] = msg.q ?? [];
+    const [wx, wy] = msg.w ?? [];
+    if (!Number.isFinite(ago) || ago > MAX_CLAIM_AGE || ![qx, qy, wx, wy].every(Number.isFinite)) return miss();
+    const mallet = g.match.mallets[m.seat];
+    const q = { x: qx, y: qy };
+    // The mallet must be inside its zone, and near where the server has it (its input trails the player's by a trip).
+    const inZone = mallet.clamp(q);
+    if (Math.hypot(inZone.x - qx, inZone.y - qy) > 0.1 || Math.hypot(qx - mallet.pos.x, qy - mallet.pos.y) > MAX_MALLET_LAG) return miss();
+    g.claimedAt[m.seat] = now;
+    g.claimFrom = at;
+    const impact = g.match.rewindHit(m.seat, q, { x: wx, y: wy }, Math.round(ago / (1000 * DT)));
+    g.claimFrom = null;
+    if (impact) g.hitAt[m.seat] = now;
+    else miss();
   }
 
   private loop() {
@@ -402,14 +482,35 @@ export class Room {
         g.match.moveMallets(DT);
       } else g.match.step(DT);
       g.tick++;
-      if (g.tick % 2 === 0) {
-        this.sendSeated(buildSnapshot(g.tick, g.match, g.countdown, g.events));
-        g.events.length = 0;
-      }
+      if (g.tick % 2 === 0) this.broadcast(g);
       if (g.match.done) {
+        this.flush(g);
         this.endGame('score', g.match.winner);
         return;
       }
+    }
+    this.flush(g);
+  }
+
+  /** The puck and the mallets that moved, to everyone seated. */
+  private broadcast(g: Game) {
+    const now = Date.now();
+    if (g.match.visible && g.countdown <= 0) {
+      const { pos } = g.match.physics;
+      this.sendSeated(encodeKey(now, [pos.x, pos.y]));
+    }
+    const snap = g.snaps.build(now, g.match.mallets);
+    if (snap) this.sendSeated(snap);
+  }
+
+  /** What happened since the last flush: hits, loud wall bounces, goals, serves. */
+  private flush(g: Game) {
+    for (const h of g.events.splice(0)) {
+      const e = h.e;
+      if (e.t === 'hit') this.sendSeated(encodeHitRelay(e.s, h.from, h.at, h.p, e.i));
+      else if (e.t === 'wall') this.sendSeated(encodeWall(h.at, e.i));
+      else if (e.t === 'goal') this.sendSeated({ t: 'goal', s: e.s, c: e.c, sc: e.sc, at: h.at });
+      else if (e.t === 'serve') this.sendSeated({ t: 'serve', s: e.s, p: h.p, at: h.at });
     }
   }
 
@@ -479,7 +580,6 @@ export class Room {
       pick.s.name = m.name;
       pick.s.color = m.color;
       pick.s.ai = false;
-      g.match.setAI(pick.i, false);
       m.seat = pick.i;
       changed = true;
       this.sendStart(m);
@@ -515,15 +615,16 @@ export class Room {
     if (!g || !g.paused.has(m.id)) return;
     g.paused.delete(m.id);
     g.votes.delete(m.id);
-    if (g.paused.size === 0) this.restartClock(g);
-    this.pauseChanged(g);
+    this.pauseChanged(g, g.paused.size === 0 ? this.restartClock(g) : 0);
   }
 
-  /** After the last pause ends: countdown before the puck moves again. */
+  /** After the last pause ends: countdown before the puck moves again. Returns its length in seconds. */
   private restartClock(g: Game) {
     g.countdown = this.cfg.countdown;
     g.acc = 0;
     g.last = performance.now();
+    g.match.clearTrail();
+    return this.cfg.countdown;
   }
 
   /** Drop paused players who are gone, and start the countdown if nobody is paused any more. */
@@ -536,8 +637,7 @@ export class Room {
       }
     }
     for (const v of g.votes.values()) for (const id of [...v]) if (!this.isSeatedHuman(g, id)) v.delete(id);
-    if (before > 0 && g.paused.size === 0) this.restartClock(g);
-    this.pauseChanged(g);
+    this.pauseChanged(g, before > 0 && g.paused.size === 0 ? this.restartClock(g) : 0);
   }
 
   private drainBudgets(g: Game, elapsed: number) {
@@ -567,8 +667,8 @@ export class Room {
     });
   }
 
-  private pauseChanged(g: Game) {
-    this.sendSeated({ t: 'pause', paused: this.pauseEntries(g) });
+  private pauseChanged(g: Game, cd = 0) {
+    this.sendSeated({ t: 'pause', paused: this.pauseEntries(g), cd, thaw: cd > 0 ? Date.now() + cd * 1000 : 0, puck: this.puckState(g) });
     this.evaluateKicks(g);
   }
 

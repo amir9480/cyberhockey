@@ -193,7 +193,29 @@ export class Multiplayer {
         this.game?.setSeats(m.seats);
         break;
       case 'pause':
+        this.game?.pauseChanged(m);
         this.onPause(m.paused);
+        break;
+      case 'hit':
+        this.game?.hit(m);
+        break;
+      case 'puck':
+        this.game?.puck(m.puck);
+        break;
+      case 'pk':
+        this.game?.track(m);
+        break;
+      case 'goal':
+        this.game?.goal(m);
+        break;
+      case 'serve':
+        this.game?.serve(m);
+        break;
+      case 'wall':
+        this.game?.wall(m);
+        break;
+      case 'miss':
+        this.game?.miss();
         break;
       case 'over':
         this.onOver(m);

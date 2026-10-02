@@ -1,3 +1,4 @@
+import { decodeClient } from '@airhockey/shared/binary';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import express from 'express';
@@ -44,12 +45,17 @@ export function createGameServer(overrides: Partial<ServerConfig> = {}, auth: Au
       client.send({ t: 'hello', id: identity.id, token });
       ws.on('message', (data: RawData, isBinary: boolean) => {
         client.lastSeen = Date.now();
-        if (isBinary) return;
-        let msg: ClientMsg;
-        try {
-          msg = JSON.parse(data.toString());
-        } catch {
-          return;
+        let msg: ClientMsg | null;
+        if (isBinary) {
+          const buf = data as Buffer;
+          msg = decodeClient(new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength));
+          if (!msg) return;
+        } else {
+          try {
+            msg = JSON.parse(data.toString());
+          } catch {
+            return;
+          }
         }
         if (!msg || typeof msg !== 'object' || typeof msg.t !== 'string') return;
         try {

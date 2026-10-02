@@ -17,13 +17,15 @@ export class Client {
     public name: string,
   ) {}
 
-  send(msg: ServerMsg | string) {
+  send(msg: ServerMsg | string | Uint8Array) {
     if (this.ws.readyState !== WebSocket.OPEN) return;
     if (this.ws.bufferedAmount > MAX_BUFFERED) {
       this.ws.terminate();
       return;
     }
-    this.ws.send(typeof msg === 'string' ? msg : JSON.stringify(msg));
+    if (typeof msg === 'string') this.ws.send(msg);
+    else if (msg instanceof Uint8Array) this.ws.send(msg, { binary: true });
+    else this.ws.send(JSON.stringify(msg));
   }
 
   error(code: Extract<ServerMsg, { t: 'error' }>['code'], msg: string) {

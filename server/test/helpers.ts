@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import WebSocket from 'ws';
+import { decodeServer } from '@airhockey/shared/binary';
 import { createGameServer, type GameServer } from '../src/app';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -31,8 +32,10 @@ export class TestClient {
 
   async open() {
     this.ws = new WebSocket(`ws://localhost:${this.port}/ws?token=${this.token}&name=${encodeURIComponent(this.name)}`);
-    this.ws.on('message', (d) => {
-      this.history.push(JSON.parse(d.toString()));
+    this.ws.on('message', (d, isBinary) => {
+      const buf = d as Buffer;
+      const msg = isBinary ? decodeServer(new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength)) : JSON.parse(d.toString());
+      if (msg) this.history.push(msg as Msg);
       for (const w of this.waiters.splice(0)) w();
     });
     await new Promise<void>((res, rej) => {

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { TestClient, newToken, sleep, startServer, type GameServer } from './helpers';
+import { buildLayout, serveSpot } from '@airhockey/shared/layout';
+import { TestClient, newToken, sleep, startServer, type GameServer, type Msg } from './helpers';
 
 let server: GameServer;
 let port: number;
@@ -78,9 +79,12 @@ describe('custom room flow', () => {
     expect(hs.players).toBe(2);
     expect(new Set([hs.seat, gs.seat]).size).toBe(2);
     expect(hs.seats).toHaveLength(2);
+    expect(hs.puck.vis).toBe(true);
+    expect(hs.mallets).toHaveLength(4);
+    guest.send({ t: 'in', x: 0, y: -5, vx: 0, vy: 0 });
     const snap = await host.nextType('s');
-    expect(snap.m).toHaveLength(4);
-    expect(snap.b).toHaveLength(2);
+    expect(snap.d.length % 3).toBe(0); // seat, x, y
+    expect(snap.d.length).toBeGreaterThanOrEqual(3);
 
     const playing = await watcher.next((m) => m.t === 'lobby' && m.rooms[0]?.status === 'playing');
     expect(playing.rooms).toHaveLength(1);
@@ -120,10 +124,97 @@ describe('custom room flow', () => {
     a.send({ t: 'pause' });
     await b.next((m) => m.t === 'pause' && m.paused.length === 1);
     a.send({ t: 'resume' });
-    await b.next((m) => m.t === 'pause' && m.paused.length === 0);
+    const p = await b.next((m) => m.t === 'pause' && m.paused.length === 0);
+    expect(p.cd).toBeGreaterThan(0);
+  });
+});
+
+describe('server simulation', () => {
+  /** The seat whose serve spot the puck starts on, and a claim to hit the resting puck toward the other goal. */
+  function shot(start: Msg) {
+    const layout = buildLayout(2);
+    const puck = { x: start.puck.p[0], y: start.puck.p[1] };
+    const seat = layout.seats.findIndex((st) => Math.hypot(serveSpot(layout, st.index).x - puck.x, serveSpot(layout, st.index).y - puck.y) < 0.1);
+    const goal = layout.seats[1 - seat].goalCenter;
+    const d = Math.hypot(goal.x - puck.x, goal.y - puck.y);
+    const dir = { x: (goal.x - puck.x) / d, y: (goal.y - puck.y) / d };
+    const gap = 0.75 + 0.55;
+    return {
+      seat,
+      claim: () => ({
+        t: 'hit',
+        at: Date.now(),
+        q: [puck.x - dir.x * gap, puck.y - dir.y * gap],
+        w: [dir.x * 20, dir.y * 20],
+      }),
+    };
+  }
+
+  it('moves a mallet toward its player\'s target and broadcasts the position', async () => {
+    const [a, b] = [await connect('A'), await connect('B')];
+    await setupRoom(a, [b]);
+    a.send({ t: 'start' });
+    const sa = await a.nextType('start');
+    await b.nextType('start');
     b.skip();
-    const s = await b.next((m) => m.t === 's' && m.cd > 0);
-    expect(s.cd).toBeGreaterThan(0);
+    a.send({ t: 'in', x: 3, y: sa.seat === 0 ? 4 : -4 });
+    const snap = await b.next((m) => m.t === 's' && m.d.some((_: number, i: number) => i % 3 === 0 && m.d[i] === sa.seat && Math.abs(m.d[i + 1]) > 0.5));
+    expect(snap.d.length % 3).toBe(0); // seat, x, y
+  });
+
+  it('judges a hit claim itself, tells everyone, and streams the puck on from there', async () => {
+    const [a, b] = [await connect('A'), await connect('B')];
+    await setupRoom(a, [b]);
+    a.send({ t: 'start' });
+    const sa = await a.nextType('start');
+    await b.nextType('start');
+    const { seat, claim } = shot(sa);
+    const [hitter, other] = sa.seat === seat ? [a, b] : [b, a];
+    expect(sa.puck.vis).toBe(true);
+    await sleep(150); // countdown
+    hitter.send(claim());
+    const hit = await other.nextType('hit');
+    expect(hit.s).toBe(seat);
+    expect(hit.impact).toBeGreaterThan(5);
+    expect(hit.at).toBeGreaterThanOrEqual(hit.from);
+    // The puck keeps moving away from where it was hit.
+    const first = await other.next((m) => m.t === 'pk' && m.at > hit.at);
+    const later = await other.next((m) => m.t === 'pk' && m.at > first.at + 100);
+    expect(Math.hypot(later.p[0] - first.p[0], later.p[1] - first.p[1])).toBeGreaterThan(1);
+  });
+
+  it('ignores a claim from a mallet that is nowhere near the puck, and a stale one', async () => {
+    const [a, b] = [await connect('A'), await connect('B')];
+    await setupRoom(a, [b]);
+    a.send({ t: 'start' });
+    const sa = await a.nextType('start');
+    await b.nextType('start');
+    const { seat, claim } = shot(sa);
+    const [hitter, other] = sa.seat === seat ? [a, b] : [b, a];
+    await sleep(150);
+    other.skip();
+    const c = claim();
+    hitter.send({ ...c, q: [c.q[0] + 4, c.q[1]] }); // far from the puck
+    hitter.send({ ...c, at: Date.now() - 5000 }); // too old
+    await sleep(150);
+    expect(other.history.some((m) => m.t === 'hit')).toBe(false);
+  });
+
+  it('awards a goal itself and serves to the conceder', async () => {
+    const [a, b] = [await connect('A'), await connect('B')];
+    await setupRoom(a, [b]);
+    a.send({ t: 'start' });
+    const sa = await a.nextType('start');
+    await b.nextType('start');
+    const { seat, claim } = shot(sa);
+    const [hitter, other] = sa.seat === seat ? [a, b] : [b, a];
+    await sleep(150);
+    hitter.send(claim());
+    const goal = await other.nextType('goal', 8000);
+    expect(goal.s).toBe(seat);
+    expect(goal.c).toBe(1 - seat);
+    expect(goal.sc[seat]).toBe(1);
+    expect((await other.nextType('serve', 4000)).s).toBe(goal.c);
   });
 });
 
