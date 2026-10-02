@@ -59,6 +59,10 @@ export class View {
   private fpsT = performance.now();
   /** False while paused: the game freezes but keeps rendering. */
   running = false;
+  /** Single player: seconds of countdown before the puck moves (mallets already can). */
+  countdown = 0;
+  /** Single player: called each frame of a countdown with the seconds left, and once with 0 when it ends. */
+  onCountdown: ((secs: number) => void) | null = null;
   private difficulty: Difficulty = 'medium';
   private players: PlayerCount = 2;
   /** Fired when someone reaches the winning score. */
@@ -323,12 +327,17 @@ export class View {
     if (this.running) {
       this.acc += dt;
       let steps = 0;
+      const counting = this.countdown > 0;
       while (this.acc >= SIM_STEP && steps < MAX_STEPS) {
-        this.match?.update(SIM_STEP);
+        if (this.countdown > 0) {
+          this.countdown = Math.max(0, this.countdown - SIM_STEP);
+          this.match?.hold(SIM_STEP);
+        } else this.match?.update(SIM_STEP);
         this.acc -= SIM_STEP;
         steps++;
       }
       if (steps === MAX_STEPS) this.acc = 0; // way behind (e.g. tab was asleep): drop the backlog
+      if (counting) this.onCountdown?.(this.countdown);
       this.fx.update(dt);
     } else {
       this.acc = 0;

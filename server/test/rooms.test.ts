@@ -115,6 +115,73 @@ describe('custom room flow', () => {
     expect(b.history.some((m) => m.t === 'left')).toBe(false);
   });
 
+  it('after a game only the host restarts it, with no ready check', async () => {
+    const [a, b, c] = [await connect('A'), await connect('B'), await connect('C')];
+    await setupRoom(a, [b, c]);
+    a.send({ t: 'restart' }); // no game has ended yet: ignored
+    await sleep(50);
+    expect(a.history.some((m) => m.t === 'start')).toBe(false);
+    a.send({ t: 'start' });
+    await a.nextType('start');
+    // C leaves and B pauses out its budget and is kicked: A wins by forfeit.
+    c.send({ t: 'leave' });
+    b.send({ t: 'pause' });
+    await a.next((m) => m.t === 'pause' && m.paused[0]?.kickable);
+    a.send({ t: 'vote', id: b.id });
+    await a.nextType('over');
+    expect((await a.room((m) => m.status === 'lobby')).over).toBe(true);
+    a.send({ t: 'restart' });
+    expect((await a.nextType('error')).code).toBe('cannot_start');
+
+    // A fresh room: B and C stay; restart needs no ready check.
+    const [d, e] = [await connect('D'), await connect('E')];
+    await setupRoom(d, [e]);
+    d.send({ t: 'start' });
+    await d.nextType('start');
+    e.send({ t: 'leave' });
+    await d.nextType('over');
+    const f = await connect('F');
+    const roomId = (await d.room((m) => m.over)).id;
+    f.send({ t: 'join', room: roomId });
+    await d.room((m) => m.members.length === 2);
+    f.send({ t: 'restart' }); // not the host: ignored
+    await sleep(50);
+    expect(f.history.some((m) => m.t === 'start')).toBe(false);
+    d.send({ t: 'restart' });
+    await d.nextType('start');
+    await f.nextType('start');
+    expect((await f.room((m) => m.status === 'playing')).over).toBe(false);
+  });
+
+  it('host leaving after a game sends everyone home', async () => {
+    const [a, b, c] = [await connect('A'), await connect('B'), await connect('C')];
+    await setupRoom(a, [b, c]);
+    a.send({ t: 'start' });
+    await a.nextType('start');
+    c.send({ t: 'leave' });
+    b.send({ t: 'leave' });
+    await a.nextType('over');
+    // Before a game is over, the host leaving just hands the room on (checked elsewhere); after it, the room ends.
+    const g = await connect('G');
+    g.send({ t: 'join', room: (await a.room((m) => m.over)).id });
+    await g.room((m) => m.members.length === 2);
+    a.send({ t: 'leave' });
+    expect((await g.nextType('left')).reason).toBe('hostLeft');
+  });
+
+  it('tells the seated players each seat\'s reported round trip', async () => {
+    const [a, b] = [await connect('A'), await connect('B')];
+    await setupRoom(a, [b]);
+    a.send({ t: 'ping', c: 0, rtt: 87.4 });
+    b.send({ t: 'ping', c: 0, rtt: 12 });
+    a.send({ t: 'start' });
+    const sa = await a.nextType('start');
+    const sb = await b.nextType('start');
+    const p = await b.next((m) => m.t === 'pings');
+    expect(p.p[sa.seat]).toBe(87);
+    expect(p.p[sb.seat]).toBe(12);
+  });
+
   it('resume starts a countdown', async () => {
     const [a, b] = [await connect('A'), await connect('B')];
     await setupRoom(a, [b]);

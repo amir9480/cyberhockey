@@ -102,6 +102,8 @@ export class Room {
   status: 'lobby' | 'playing' = 'lobby';
   /** Quick rooms start by themselves once, when full. */
   autoStarted = false;
+  /** A game ended and nothing has started since: the host restarts or leaves, closing the room. */
+  over = false;
   game: Game | null = null;
   private closed = false;
 
@@ -197,8 +199,8 @@ export class Room {
       m.conn.send({ t: 'left', reason });
       m.conn = null;
     }
-    if (this.members.size === 0) {
-      this.close();
+    if (this.members.size === 0 || (this.over && this.hostId === id)) {
+      this.close(this.members.size ? 'hostLeft' : 'closed');
       return;
     }
     if (this.hostId === id) this.transferHost();
@@ -297,6 +299,11 @@ export class Room {
         if (why) return client.error('cannot_start', why);
         return this.startGame();
       }
+      case 'restart': {
+        if (!isHost || !this.over || this.status !== 'lobby') return;
+        if (this.playersOnline < 2) return client.error('cannot_start', 'Need at least 2 players online');
+        return this.startGame();
+      }
       case 'in':
         return this.onInput(m, msg);
       case 'pause':
@@ -344,6 +351,7 @@ export class Room {
     const seated = [...this.members.values()].filter((m) => m.online).slice(0, 4);
     if (seated.length < 2) return;
     if (this.quick) this.autoStarted = true;
+    this.over = false;
     const match = new MatchCore(seated.length as PlayerCount, this.settings.malletScale, this.settings.winScore);
     const events: Happened[] = [];
     match.onEvent = (e) => events.push({ e, tick: g.tick, p: [match.physics.pos.x, match.physics.pos.y] });
@@ -371,6 +379,11 @@ export class Room {
     this.status = 'playing';
     for (const m of seated) this.sendStart(m);
     this.changed();
+  }
+
+  /** Each seat's player round trip, ms (0 for an AI). */
+  private pings(g: Game) {
+    return g.seats.map((s) => (s.ai || !s.id ? 0 : (this.members.get(s.id)?.conn?.rtt ?? 0)));
   }
 
   private seatInfos(): SeatInfo[] {
@@ -496,6 +509,7 @@ export class Room {
       // Events first: a client takes a predicted hit the state comes without as one that didn't happen.
       this.flush(g);
       if (g.tick % STATE_EVERY === 0) this.sendSeated(encodeState(this.state(g)));
+      if (g.tick % TICK_RATE === 0) this.sendSeated({ t: 'pings', p: this.pings(g) });
       if (g.match.done) {
         this.flush(g);
         this.endGame('score', g.match.winner);
@@ -523,6 +537,7 @@ export class Room {
     clearInterval(g.timer);
     this.game = null;
     this.status = 'lobby';
+    this.over = true;
     const over: ServerMsg = {
       t: 'over',
       winner,
@@ -714,6 +729,7 @@ export class Room {
       cap: this.cap,
       host: this.hostId,
       status: this.status,
+      over: this.over,
       settings: { ...this.settings },
       members: this.memberInfos(),
     };
@@ -741,8 +757,8 @@ export class Room {
     };
   }
 
-  /** Stop everything; remaining members are told the room closed. */
-  close() {
+  /** Stop everything; remaining members are told why. */
+  close(reason: 'closed' | 'hostLeft' = 'closed') {
     if (this.closed) return;
     this.closed = true;
     if (this.game) clearInterval(this.game.timer);
@@ -751,7 +767,7 @@ export class Room {
       if (m.grace) clearTimeout(m.grace);
       if (m.conn) {
         if (m.conn.room === this) m.conn.room = null;
-        m.conn.send({ t: 'left', reason: 'closed' });
+        m.conn.send({ t: 'left', reason });
       }
     }
     this.members.clear();

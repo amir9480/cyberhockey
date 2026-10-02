@@ -1,4 +1,4 @@
-# Neon Air Hockey
+# Cyber Hockey
 
 Three.js air hockey for 2–4 players: single player against AI, or online multiplayer with an authoritative Express + WebSocket server.
 

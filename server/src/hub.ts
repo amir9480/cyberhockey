@@ -19,6 +19,7 @@ export class Hub {
     switch (msg.t) {
       case 'ping':
         client.send({ t: 'pong', c: Number(msg.c) || 0, st: Date.now() });
+        if (Number.isFinite(msg.rtt)) client.rtt = Math.max(0, Math.min(9999, Math.round(Number(msg.rtt))));
         return;
       case 'name':
         client.name = cleanName(msg.name);

@@ -104,6 +104,22 @@ const EFFECTS: Record<string, { dur: number; build: Build }> = {
       tone(c, out, 0.1, 0.25, hz(74), { gain: 0.1 });
     },
   },
+  // Countdown: 3, 2, 1.
+  count: {
+    dur: 0.3,
+    build: (c, out) => {
+      tone(c, out, 0, 0.22, hz(81), { type: 'square', gain: 0.12, attack: 0.004 });
+      tone(c, out, 0, 0.25, hz(69), { gain: 0.25 });
+    },
+  },
+  // Countdown: GO.
+  go: {
+    dur: 0.8,
+    build: (c, out) => {
+      [81, 85, 88, 93].forEach((m) => tone(c, out, 0, 0.6, hz(m), { type: 'square', gain: 0.06, attack: 0.005 }));
+      tone(c, out, 0, 0.7, hz(93), { gain: 0.25, slideTo: hz(95) });
+    },
+  },
   // UI button press.
   ui: {
     dur: 0.12,
@@ -177,6 +193,16 @@ export class Sound {
 
   other() {
     this.play('other');
+  }
+
+  /** A countdown number (3, 2, 1). */
+  count() {
+    this.play('count', 1, 1, 0.2);
+  }
+
+  /** The countdown ends: play starts. */
+  go() {
+    this.play('go', 1, 1, 0.2);
   }
 
   /** UI button press. */

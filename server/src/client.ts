@@ -10,6 +10,8 @@ export class Client {
   room: Room | null = null;
   lobby = false;
   lastSeen = Date.now();
+  /** Round trip the client last reported, ms (0: unknown). */
+  rtt = 0;
 
   constructor(
     readonly ws: WebSocket,

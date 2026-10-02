@@ -4,22 +4,25 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#05030a" />
-    <title>Neon Air Hockey</title>
+    <title>Cyber Hockey</title>
     <style>
       html, body { margin: 0; height: 100%; background: #05030a; overflow: hidden; overscroll-behavior: none; }
       canvas#view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
       body.playing, body.playing canvas#view { cursor: none; }
 
       /* Pause menu: a scrolling overlay with one centred column that adapts to any screen width. */
-      #pause, .screen {
+      .screen {
         position: fixed; inset: 0; z-index: 10; display: flex; overflow-y: auto; -webkit-overflow-scrolling: touch;
         padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
         background: rgba(3, 1, 10, 0.62); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
         font: 600 13px/1.2 ui-sans-serif, system-ui, sans-serif; letter-spacing: 0.08em; color: #9d8fd0;
         -webkit-tap-highlight-color: transparent;
       }
-      #pause[hidden], .screen[hidden] { display: none; }
-      body.benchmarking #pause, body.benchmarking .screen { backdrop-filter: none; -webkit-backdrop-filter: none; background: rgba(3, 1, 10, 0.9); }
+      .screen[hidden] { display: none; }
+      body.benchmarking .screen { backdrop-filter: none; -webkit-backdrop-filter: none; background: rgba(3, 1, 10, 0.9); }
+      /* Dragging the camera angle: see the table through the menu. */
+      .screen { transition: opacity .15s, background .15s; }
+      body.peek .screen { opacity: 0.5; background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none; }
       .menu { margin: auto; width: 100%; max-width: 440px; display: flex; flex-direction: column; gap: 16px; }
       .group { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
       .cap { font-size: 11px; letter-spacing: 0.14em; color: #7d70a8; padding-left: 4px; }
@@ -61,13 +64,6 @@
       }
       select option { background: #0a0618; }
 
-      #resume {
-        all: unset; box-sizing: border-box; width: 100%; text-align: center; cursor: pointer; margin-top: 4px;
-        padding: 16px 24px; border-radius: 999px; color: #fff; font-size: 15px; letter-spacing: 0.14em;
-        background: rgba(140, 90, 255, 0.28); border: 1px solid rgba(160, 120, 255, 0.5);
-        box-shadow: 0 0 22px rgba(120, 90, 255, 0.55); transition: background .2s, box-shadow .2s, opacity .2s;
-      }
-      #resume:hover { background: rgba(140, 90, 255, 0.45); box-shadow: 0 0 30px rgba(140, 100, 255, 0.8); }
       .ghost {
         all: unset; box-sizing: border-box; width: 100%; text-align: center; cursor: pointer;
         padding: 12px 24px; border-radius: 999px; color: #9d8fd0; letter-spacing: 0.14em;
@@ -94,15 +90,14 @@
       #result #again { all: unset; box-sizing: border-box; width: 100%; text-align: center; cursor: pointer; padding: 16px 24px; border-radius: 999px; color: #fff; font-size: 15px; letter-spacing: 0.14em; background: rgba(140, 90, 255, 0.28); border: 1px solid rgba(160, 120, 255, 0.5); box-shadow: 0 0 22px rgba(120, 90, 255, 0.55); }
       #result #again:hover { background: rgba(140, 90, 255, 0.45); }
       #result #again:focus-visible { outline: 2px solid #6ff; outline-offset: 2px; }
-      #resume:disabled { opacity: 0.5; cursor: default; }
-      .pills button:focus-visible, #resume:focus-visible, select:focus-visible { outline: 2px solid #6ff; outline-offset: 2px; }
+      .pills button:focus-visible, select:focus-visible { outline: 2px solid #6ff; outline-offset: 2px; }
 
 
       /* Multiplayer: screens, HUD, banners */
       [hidden] { display: none !important; }
       .swatches.pills button:disabled { opacity: 0.15; cursor: not-allowed; box-shadow: none; }
       .mp-only { display: none !important; }
-      body.mp .mp-only { display: flex !important; }
+      body.mp .mp-only { display: block !important; }
       body.mp .sp-only { display: none !important; }
       input[type="text"] {
         width: 100%; box-sizing: border-box; padding: 12px 14px; border-radius: 10px; font: inherit; letter-spacing: inherit;
@@ -137,6 +132,7 @@
       .badge.ai { color: #ffb400; }
       .inline { display: flex; gap: 8px; align-items: stretch; }
       .inline > * { flex: 1 1 0; min-width: 0; }
+      .inline > .ghost { flex: none; width: auto; padding: 11px 18px; }
       .roomid { display: flex; gap: 8px; align-items: center; }
       .roomid code { flex: 1; padding: 11px 12px; border-radius: 10px; color: #fff; font-size: 15px; letter-spacing: 0.2em; background: rgba(10, 6, 24, 0.75); border: 1px solid rgba(160, 120, 255, 0.35); }
       .roomid .ghost { width: auto; padding: 11px 16px; }
@@ -147,6 +143,24 @@
         font: 600 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.06em; color: rgba(190, 255, 255, 0.85); text-shadow: 0 0 6px rgba(0, 229, 255, 0.6);
       }
       body.playing #hud { display: block; }
+      body.nohud #hudStats { display: none; }
+      #hudScores { display: grid; grid-template-columns: auto auto auto; gap: 5px 10px; align-items: center; margin-top: 8px; }
+      #hudScores:empty { display: none; }
+      #hudScores .who { display: flex; align-items: center; gap: 6px; max-width: 34vw; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+      #hudScores .who .dot { width: 9px; height: 9px; }
+      #hudScores .pts { text-align: right; color: #fff; font-variant-numeric: tabular-nums; }
+      #hudScores .ms { color: rgba(190, 255, 255, 0.55); font-variant-numeric: tabular-nums; }
+      #hudScores .me { color: #fff; }
+      #pauseBtn {
+        all: unset; box-sizing: border-box; position: fixed; z-index: 7; display: none; align-items: center; justify-content: center; gap: 6px;
+        top: max(10px, env(safe-area-inset-top)); right: max(10px, env(safe-area-inset-right)); width: 46px; height: 46px; border-radius: 50%;
+        background: rgba(10, 6, 24, 0.55); border: 1px solid rgba(160, 120, 255, 0.5); box-shadow: 0 0 14px rgba(120, 90, 255, 0.45);
+        -webkit-tap-highlight-color: transparent; touch-action: manipulation;
+      }
+      #pauseBtn::before, #pauseBtn::after { content: ''; width: 5px; height: 17px; border-radius: 2px; background: #fff; box-shadow: 0 0 6px #00e5ff; }
+      body.playing #pauseBtn { display: flex; cursor: pointer; }
+      #pauseBtn:hover { background: rgba(140, 90, 255, 0.4); }
+      #pauseBtn:focus-visible { outline: 2px solid #6ff; outline-offset: 2px; }
       #countdown {
         position: fixed; inset: 0; z-index: 6; display: flex; align-items: center; justify-content: center; pointer-events: none;
         font: 800 clamp(96px, 28vw, 220px)/1 ui-sans-serif, system-ui, sans-serif; color: #fff; text-shadow: 0 0 18px #8c5aff, 0 0 48px #00e5ff, 0 0 90px #00e5ff;
@@ -176,13 +190,14 @@
       }
       @media (max-height: 520px) {
         .menu { gap: 10px; }
-        #resume { padding: 12px 24px; }
+        .primary { padding: 12px 24px; }
       }
     </style>
   </head>
   <body>
     <canvas id="view"></canvas>
-    <div id="hud"></div>
+    <div id="hud"><div id="hudStats"></div><div id="hudScores"></div></div>
+    <button id="pauseBtn" type="button" aria-label="Pause"></button>
     <div id="countdown" hidden></div>
     <div id="banner" hidden>
       <div id="bannerText"></div>
@@ -193,21 +208,107 @@
     </div>
     <div id="hint" hidden>CLICK TO ENTER FULLSCREEN</div>
     <div id="toast" hidden></div>
-    <section id="home" class="screen">
-      <div class="menu">
-        <h1 class="title">NEON AIR HOCKEY</h1>
+    <section id="nameScreen" class="screen">
+      <form id="nameForm" class="menu">
+        <h1 class="title">CYBER HOCKEY</h1>
         <div class="group">
           <label class="cap" for="nameInput">YOUR NAME</label>
           <input id="nameInput" type="text" maxlength="16" autocomplete="nickname" spellcheck="false" placeholder="Enter a name" />
         </div>
-        <div id="homeNote" class="note"></div>
+        <div id="nameNote" class="note"></div>
+        <button id="saveName" class="primary" type="submit">SAVE</button>
+      </form>
+    </section>
+    <section id="home" class="screen" hidden>
+      <div class="menu">
+        <h1 class="title">CYBER HOCKEY</h1>
         <button id="goSingle" class="primary" type="button">SINGLE PLAYER</button>
-        <button id="goMulti" class="primary" type="button">MULTIPLAYER</button>
+        <button id="goMulti" class="primary" type="button">MULTI PLAYER</button>
+        <button id="goSettings" class="ghost" type="button">SETTINGS</button>
+      </div>
+    </section>
+    <section id="spSetup" class="screen" hidden>
+      <div class="menu">
+        <h1 class="title">SINGLE PLAYER</h1>
+        <div class="group">
+          <div class="cap">PLAYERS</div>
+          <div id="modes" class="pills" role="group" aria-label="Player count">
+            <button data-n="2" aria-pressed="false">2P</button>
+            <button data-n="3" aria-pressed="false">3P</button>
+            <button data-n="4" aria-pressed="false">4P</button>
+          </div>
+        </div>
+        <div class="group">
+          <div class="cap">YOUR COLOR</div>
+          <div id="colors" class="pills swatches" role="group" aria-label="Your colour"></div>
+        </div>
+        <div class="group">
+          <div class="cap">DIFFICULTY</div>
+          <div id="difficulty" class="pills" role="group" aria-label="Difficulty">
+            <button data-d="easy" aria-pressed="false">EASY</button>
+            <button data-d="medium" aria-pressed="false">MEDIUM</button>
+            <button data-d="hard" aria-pressed="false">HARD</button>
+            <button data-d="expert" aria-pressed="false">EXPERT</button>
+          </div>
+        </div>
+        <label class="slider cap">POINTS TO WIN
+          <output id="winOut">10</output>
+          <input id="winInput" type="range" min="10" max="100" step="1" value="10" />
+        </label>
+        <label class="slider cap">MALLET SIZE
+          <output id="malletOut">100%</output>
+          <input id="malletInput" type="range" min="0.6" max="1.6" step="0.05" value="1" />
+        </label>
+        <button id="spStart" class="primary" type="button">START</button>
+        <button id="spBack" class="ghost" type="button">BACK</button>
+      </div>
+    </section>
+    <section id="settings" class="screen" hidden>
+      <div class="menu">
+        <h1 class="title">SETTINGS</h1>
+        <div class="group">
+          <label class="cap" for="settingsName">YOUR NAME</label>
+          <form id="settingsNameForm" class="inline">
+            <input id="settingsName" type="text" maxlength="16" autocomplete="nickname" spellcheck="false" />
+            <button id="settingsSave" class="ghost" type="submit">SAVE</button>
+          </form>
+        </div>
+        <div id="settingsNote" class="note"></div>
+        <div class="group">
+          <div class="cap">AUDIO</div>
+          <div id="audio" class="pills" role="group" aria-label="Audio">
+            <button data-k="music" aria-pressed="true">MUSIC ON</button>
+            <button data-k="sfx" aria-pressed="true">SOUND FX ON</button>
+          </div>
+        </div>
+        <div class="group">
+          <div class="cap">DISPLAY</div>
+          <div class="pills">
+            <button id="hudToggle" aria-pressed="true">SHOW FPS / PING ON</button>
+          </div>
+        </div>
+        <div class="group">
+          <label class="cap" for="quality">GRAPHICS QUALITY</label>
+          <select id="quality">
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+          </select>
+        </div>
+        <label class="slider cap">CAMERA ANGLE
+          <output id="pitchOut">50°</output>
+          <input id="pitchInput" type="range" min="15" max="89" step="1" value="50" />
+        </label>
+        <label class="slider cap">SENSITIVITY
+          <output id="sensOut">1.0</output>
+          <input id="sensInput" type="range" min="0.25" max="5" step="0.05" value="1" />
+        </label>
+        <button id="settingsBack" class="primary" type="button">BACK</button>
       </div>
     </section>
     <section id="lobby" class="screen" hidden>
       <div class="menu">
-        <h1 class="title">MULTIPLAYER</h1>
+        <h1 class="title">MULTI PLAYER</h1>
         <div class="group">
           <div class="cap">PUBLIC ROOMS</div>
           <div id="roomList" class="list"></div>
@@ -226,10 +327,6 @@
             <button id="quick2" class="primary" type="button">2 PLAYERS</button>
             <button id="quick4" class="primary" type="button">4 PLAYERS</button>
           </div>
-        </div>
-        <div class="group">
-          <label class="cap" for="lobbyName">YOUR NAME</label>
-          <input id="lobbyName" type="text" maxlength="16" autocomplete="nickname" spellcheck="false" />
         </div>
         <div id="lobbyNote" class="note"></div>
         <button id="lobbyBack" class="ghost" type="button">BACK</button>
@@ -277,71 +374,21 @@
       <div id="resultNames" class="names" hidden></div>
       <div id="resultNote" class="sub" hidden></div>
       <div class="btns">
+        <div id="resultWait" class="note" hidden></div>
         <button id="again" type="button">PLAY AGAIN</button>
-        <button id="toMenu" class="ghost" type="button">MENU</button>
+        <button id="toMenu" class="ghost" type="button">QUIT</button>
       </div>
     </div>
-    <div id="pause">
+    <section id="pause" class="screen" hidden>
       <div class="menu">
-        <div class="group sp-only">
-          <div class="cap">PLAYERS</div>
-          <div id="modes" class="pills" role="group" aria-label="Player count">
-            <button data-n="2" aria-pressed="false">2P</button>
-            <button data-n="3" aria-pressed="false">3P</button>
-            <button data-n="4" aria-pressed="false">4P</button>
-          </div>
-        </div>
-        <div class="group sp-only">
-          <div class="cap">YOUR COLOR</div>
-          <div id="colors" class="pills swatches" role="group" aria-label="Your colour"></div>
-        </div>
-        <div class="group sp-only">
-          <div class="cap">DIFFICULTY</div>
-          <div id="difficulty" class="pills" role="group" aria-label="Difficulty">
-            <button data-d="easy" aria-pressed="false">EASY</button>
-            <button data-d="medium" aria-pressed="false">MEDIUM</button>
-            <button data-d="hard" aria-pressed="false">HARD</button>
-            <button data-d="expert" aria-pressed="false">EXPERT</button>
-          </div>
-        </div>
-        <label class="slider cap sp-only">POINTS TO WIN
-          <output id="winOut">10</output>
-          <input id="winInput" type="range" min="10" max="100" step="1" value="10" />
-        </label>
-        <label class="slider cap sp-only">MALLET SIZE
-          <output id="malletOut">100%</output>
-          <input id="malletInput" type="range" min="0.6" max="1.6" step="0.05" value="1" />
-        </label>
-        <div class="group">
-          <div class="cap">AUDIO</div>
-          <div id="audio" class="pills" role="group" aria-label="Audio">
-            <button data-k="music" aria-pressed="true">MUSIC ON</button>
-            <button data-k="sfx" aria-pressed="true">SOUND FX ON</button>
-          </div>
-        </div>
-        <div class="group">
-          <label class="cap" for="quality">GRAPHICS QUALITY</label>
-          <select id="quality">
-            <option value="low">Low</option>
-            <option value="medium">Medium</option>
-            <option value="high">High</option>
-          </select>
-        </div>
-        <label class="slider cap">CAMERA ANGLE
-          <output id="pitchOut">50°</output>
-          <input id="pitchInput" type="range" min="15" max="89" step="1" value="50" />
-        </label>
-        <label class="slider cap">SENSITIVITY
-          <output id="sensOut">1.0</output>
-          <input id="sensInput" type="range" min="0.25" max="5" step="0.05" value="1" />
-        </label>
-        <div id="pauseLeft" class="note mp-only" style="justify-content:center"></div>
-        <button id="resume" type="button">PLAY</button>
-        <button id="restart" class="ghost sp-only" type="button">RESTART GAME</button>
-        <button id="leaveGame" class="ghost mp-only" type="button" style="justify-content:center">LEAVE GAME</button>
-        <button id="toHome" class="ghost sp-only" type="button">MAIN MENU</button>
+        <h1 class="title">PAUSED</h1>
+        <div id="pauseLeft" class="note mp-only"></div>
+        <button id="resume" class="primary" type="button">RESUME</button>
+        <button id="restart" class="ghost sp-only" type="button">RESTART</button>
+        <button id="pauseSettings" class="ghost" type="button">SETTINGS</button>
+        <button id="quit" class="ghost" type="button">QUIT</button>
       </div>
-    </div>
+    </section>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

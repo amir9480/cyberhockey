@@ -121,7 +121,7 @@ export class Socket {
 
   private startPing() {
     this.stopPing();
-    const ping = () => this.send({ t: 'ping', c: performance.now() });
+    const ping = () => this.send({ t: 'ping', c: performance.now(), rtt: Math.round(this.rtt) });
     ping();
     // A quick burst, so the server clock is known before the first game starts.
     for (const ms of [100, 250, 500]) setTimeout(ping, ms);

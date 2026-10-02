@@ -19,7 +19,8 @@ export function cleanName(raw: unknown, fallback = 'Player'): string {
 // --- client -> server --------------------------------------------------------
 
 export type ClientMsg =
-  | { t: 'ping'; c: number }
+  /** `rtt`: this client's smoothed round trip, ms, shown to the others in its room. */
+  | { t: 'ping'; c: number; rtt?: number }
   | { t: 'name'; name: string }
   | { t: 'lobby' }
   | { t: 'unlobby' }
@@ -32,6 +33,8 @@ export type ClientMsg =
   | { t: 'settings'; public?: boolean; winScore?: number; malletScale?: number }
   | { t: 'kick'; id: string }
   | { t: 'start' }
+  /** Host, after a game ended: start the next one at once with whoever is online (no ready check). */
+  | { t: 'restart' }
   /**
    * This player's mallet at the end of ticks `tick`, `tick + 1`, … (`m` is x,y pairs). The client runs ahead of the
    * server, so these arrive before the server simulates those ticks and its puck meets the same mallet the player
@@ -91,7 +94,8 @@ export interface PauseEntry {
   need: number;
 }
 
-export type LeftReason = 'kicked' | 'closed' | 'replaced' | 'left';
+/** `hostLeft`: the host left after a game, which ends the room for everyone. */
+export type LeftReason = 'kicked' | 'closed' | 'replaced' | 'left' | 'hostLeft';
 
 export type ServerMsg =
   | { t: 'hello'; id: string; token: string }
@@ -109,6 +113,8 @@ export type ServerMsg =
       /** Player id of the host. */
       host: string;
       status: 'lobby' | 'playing';
+      /** A game just ended: the host decides whether to restart or leave (which closes the room). */
+      over: boolean;
       settings: RoomSettings;
       members: MemberInfo[];
     }
@@ -135,6 +141,8 @@ export type ServerMsg =
   | { t: 'goal'; s: number; c: number; sc: number[]; tick: number }
   | { t: 'serve'; s: number; p: [number, number]; tick: number }
   | { t: 'seats'; seats: SeatInfo[] }
+  /** Each seat's player round trip in ms, once a second during a game (0: AI or not known yet). */
+  | { t: 'pings'; p: number[] }
   /** `cd` > 0: nobody is paused any more, count down this many seconds before play resumes. */
   | { t: 'pause'; paused: PauseEntry[]; cd: number }
   | { t: 'over'; winner: number; scores: number[]; seats: SeatInfo[]; reason: 'score' | 'forfeit' };

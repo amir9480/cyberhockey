@@ -60,6 +60,11 @@ export class Match {
     this.ball.setPosition({ x: p.x + this.glide.x, y: p.y + this.glide.y });
   }
 
+  /** Countdown before play: mallets move, the puck waits. */
+  hold(dt: number) {
+    this.core.moveMallets(dt);
+  }
+
   update(dt: number) {
     this.core.step(dt);
     this.ball.group.visible = this.core.visible;
