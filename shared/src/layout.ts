@@ -56,6 +56,8 @@ export interface TableLayout {
 
 const CORNER_RADIUS = 1.2;
 const GOAL_WIDTH = 4.4;
+const TRI_SIDE = 24; // 3P: side of the triangle before its corners are cut off
+const TRI_CUT = 6.2; // 3P: length of each cut (a goal edge); its straight part must fit the goal mouth
 
 const sub = (a: Vec2, b: Vec2): Vec2 => ({ x: a.x - b.x, y: a.y - b.y });
 const dot = (a: Vec2, b: Vec2) => a.x * b.x + a.y * b.y;
@@ -79,16 +81,25 @@ function basePolygon(n: PlayerCount): { polygon: Vec2[]; seatEdges: number[] } {
       };
     }
     case 3: {
-      const side = 17;
-      const h = (side * Math.sqrt(3)) / 2;
-      const bottom = h / 3; // centroid at origin
+      // A triangle pointing at the viewer, its corners cut off: the goals sit in the corners.
+      const h = (TRI_SIDE * Math.sqrt(3)) / 2;
+      const apex = { x: 0, y: (h * 2) / 3 }; // centroid at origin
+      const right = { x: TRI_SIDE / 2, y: -h / 3 };
+      const left = { x: -TRI_SIDE / 2, y: -h / 3 };
+      const toward = (a: Vec2, b: Vec2): Vec2 => {
+        const d = norm(sub(b, a));
+        return { x: a.x + d.x * TRI_CUT, y: a.y + d.y * TRI_CUT };
+      };
       return {
         polygon: [
-          { x: -side / 2, y: bottom },
-          { x: side / 2, y: bottom },
-          { x: 0, y: bottom - h },
+          toward(apex, left),
+          toward(apex, right), // edge 0: the bottom corner
+          toward(right, apex),
+          toward(right, left), // edge 2: the upper-right corner
+          toward(left, right),
+          toward(left, apex), // edge 4: the upper-left corner
         ],
-        seatEdges: [0, 2, 1], // bottom, upper-left, upper-right
+        seatEdges: [0, 4, 2], // bottom, upper-left, upper-right
       };
     }
     case 4: {
@@ -156,16 +167,25 @@ export function buildLayout(players: PlayerCount): TableLayout {
   const creaseRadius = Math.min(3, reach * 0.5);
   const centerRadius = Math.min(2.4, reach - creaseRadius - 1.2);
 
-  // Zone borders run from the center to each corner, equidistant from the neighbouring goals.
-  // 2P: zones are split by the midline, running out to both side walls.
-  const dividers = players === 2 ? [{ x: 1, y: 0 }, { x: -1, y: 0 }] : inset.map((v) => norm(v));
+  // Zone borders run from the center to the contour point midway between two neighbouring goals: the corner they
+  // share (4P) or the middle of the wall between them (3P). 2P: zones are split by the midline, out to both side walls.
+  const goalEdges = [...seatEdges].sort((a, b) => a - b);
+  const after = (edge: number): Vec2 => {
+    const next = goalEdges[(goalEdges.indexOf(edge) + 1) % goalEdges.length];
+    if (next === (edge + 1) % n) return norm(inset[next]);
+    const wall = (edge + 1) % n;
+    const a = inset[wall];
+    const b = inset[(wall + 1) % n];
+    return norm({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+  };
+  const before = (edge: number) => after(goalEdges[(goalEdges.indexOf(edge) + goalEdges.length - 1) % goalEdges.length]);
+  const dividers = players === 2 ? [{ x: 1, y: 0 }, { x: -1, y: 0 }] : goalEdges.map(after);
 
   // Per-seat zone: 2P is the half of the table on the seat's side of the midline,
-  // 3P/4P is the wedge between the two dividers running to the seat's edge corners.
+  // 3P/4P is the wedge between the dividers on either side of the seat's goal.
   const zones: Plane[][] = seats.map((st) => {
     if (players === 2) return [{ n: { x: -st.inward.x, y: -st.inward.y }, d: 0 }];
-    return [st.edge, (st.edge + 1) % n].map((i) => {
-      const dv = dividers[i];
+    return [before(st.edge), after(st.edge)].map((dv) => {
       let pn = { x: -dv.y, y: dv.x };
       if (dot(pn, st.goalCenter) < 0) pn = { x: -pn.x, y: -pn.y };
       return { n: pn, d: 0 };

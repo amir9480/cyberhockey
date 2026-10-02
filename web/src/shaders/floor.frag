@@ -1,5 +1,5 @@
 precision highp float;
-#define MAX_N 4
+#define MAX_N 6 // polygon corners (3P is a hexagon); seats are fewer
 #define MAX_OCC 8
 #define MAX_RIP 4
 #define RIPPLE_SPEED 10.0 // units/s

@@ -15,7 +15,7 @@ import type { CyberUniforms } from './cyber';
 const WALL_HEIGHT = 0.55;
 const WALL_THICKNESS = 0.4;
 const ARC_STEPS = 10;
-const MAX_N = 4;
+const MAX_N = 6; // polygon corners (3P is a hexagon); seats are fewer
 const MAX_OCC = 8;
 const LIGHT_BACK = 2.0;
 const FIELD_HEIGHT = WALL_HEIGHT * 1.7; // goal force field
