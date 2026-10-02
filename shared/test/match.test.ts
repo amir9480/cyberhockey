@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildLayout, type PlayerCount } from '../src/layout';
+import { buildLayout, serveSpot, type PlayerCount } from '../src/layout';
 import { MatchCore, GOAL_PAUSE, type MatchEvent } from '../src/match';
 import { SimMallet } from '../src/mallet';
 
@@ -57,6 +57,32 @@ describe('SimMallet', () => {
 });
 
 describe('MatchCore', () => {
+  it('serves a puck stuck in a corner again on its own side after 5 s, for a human mallet too', () => {
+    const m = new MatchCore(2, 1, 5);
+    m.setDriven(0, true); // a networked human
+    const events: MatchEvent[] = [];
+    m.onEvent = (e) => events.push(e);
+    const mallet = m.mallets[0];
+    // Seat 0's corner: the mallet keeps shoving the puck into it.
+    const corner = mallet.clamp({ x: 100, y: 100 });
+    m.physics.reset({ x: corner.x - 0.2, y: corner.y + 0.2 });
+    const from = mallet.clamp({ x: corner.x - 3, y: corner.y - 3 });
+    mallet.place(from.x, from.y);
+    let back = -1;
+    for (let i = 0; i < 1000 && back < 0; i++) {
+      const p = mallet.pos;
+      const d = Math.hypot(corner.x + 2 - p.x, corner.y + 2 - p.y) || 1;
+      m.drive(0, mallet.clamp({ x: p.x + ((corner.x + 2 - p.x) / d) * 0.3, y: p.y + ((corner.y + 2 - p.y) / d) * 0.3 }));
+      m.step(DT);
+      if (events.some((e) => e.t === 'serve')) back = i;
+    }
+    expect(back * DT).toBeGreaterThan(4.9); // not at once: after STUCK_TIME
+    expect(back * DT).toBeLessThan(5.5);
+    expect(m.physics.pos).toEqual(serveSpot(m.layout, 0, 1)); // seat 0's side, where it was stuck
+    expect(m.physics.vel).toEqual({ x: 0, y: 0 });
+    expect(events.find((e) => e.t === 'serve')).toEqual({ t: 'serve', s: 0 });
+  });
+
   it('only moves human seats via setTarget', () => {
     const m = new MatchCore(2, 1, 10);
     m.setAI(1, true);

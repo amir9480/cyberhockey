@@ -12,6 +12,11 @@ const pauseMenu = document.getElementById('pause') as HTMLElement;
 const resumeBtn = document.getElementById('resume') as HTMLButtonElement;
 const buttons = [...document.querySelectorAll<HTMLButtonElement>('#modes button')];
 const view = new View(canvas);
+/**
+ * Debug: `?debug` plays without fullscreen (the mouse follows the cursor, no pointer lock needed), Esc doesn't pause,
+ * and the game objects are exposed as `window.airhockey`, for driving and measuring the game from DevTools.
+ */
+const DEBUG = new URLSearchParams(location.search).has('debug');
 const input = new Input(view, canvas);
 
 const parse = (v: string | null): PlayerCount => (v === '3' ? 3 : v === '4' ? 4 : 2);
@@ -316,7 +321,7 @@ setColor(myColor);
 // Playing = fullscreen, hidden cursor. Leaving fullscreen (Esc) pauses.
 let playing = false;
 let paused = true; // the page opens on the pause menu
-const canFullscreen = !!document.documentElement.requestFullscreen;
+const canFullscreen = !DEBUG && !!document.documentElement.requestFullscreen;
 
 const result = document.getElementById('result') as HTMLElement;
 const resultTitle = document.getElementById('resultTitle') as HTMLElement;
@@ -438,7 +443,8 @@ document.addEventListener('fullscreenchange', () => {
 });
 
 addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape' || document.fullscreenElement) return;
+  // Debug: Esc does nothing, so a test run isn't paused by stray keys.
+  if (e.key !== 'Escape' || document.fullscreenElement || DEBUG) return;
   if (mode === 'sp' && playing) setPlaying(false);
   else if (mode === 'mp') mp.selfPause();
 });
@@ -480,6 +486,7 @@ const mp: Multiplayer = new Multiplayer({
     if (document.pointerLockElement) document.exitPointerLock();
   },
   lockPointer,
+  canFullscreen,
   goFullscreen: () => {
     if (document.fullscreenElement) return Promise.resolve();
     if (!canFullscreen) return Promise.reject(new Error('no fullscreen'));
@@ -539,6 +546,7 @@ setInterval(renderHud, 500);
 
 input.enabled = false;
 const params = new URLSearchParams(location.search);
+if (DEBUG) Object.assign(window, { airhockey: { view, mp } });
 setPlayers(parse(params.get('players')));
 updateOverlays();
 const roomParam = params.get('room');

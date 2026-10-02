@@ -52,7 +52,6 @@ export class AiPlayer {
   private aimSeat = 0;
   private strikeTarget: Vec2 = { x: 0, y: 0 };
   private strikeLeft = 0;
-  private retreatLeft = 0;
 
   constructor(
     private layout: TableLayout,
@@ -73,19 +72,8 @@ export class AiPlayer {
     this.targets = d === 'expert' ? [0] : others;
   }
 
-  /** Back off to the goal for a moment (used to free a puck pinned against a wall). */
-  retreat(seconds: number) {
-    this.retreatLeft = seconds;
-    this.phase = 'defend';
-  }
-
   update(dt: number, puck: PuckState) {
     const p = this.params;
-    if (this.retreatLeft > 0) {
-      this.retreatLeft -= dt;
-      this.moveTo(this.defendSpot({ x: 0, y: 0 }), p.speed, dt);
-      return;
-    }
     this.sense -= dt;
     if (this.sense <= 0) {
       this.seen.pos = { ...puck.pos };

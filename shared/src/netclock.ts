@@ -5,15 +5,15 @@ const LEAD_START = 25; // ms above half the round trip
 const LEAD_MIN = 1; // ticks
 const LEAD_MAX = 72;
 const SLACK_LOW = 1; // ticks: inputs arriving with less to spare than this push the lead up
-const SLACK_HIGH = 5; // more to spare than this lets it come down
+const SLACK_HIGH = 3; // more to spare than this lets it come down (every tick of lead is a tick of display depth)
 const NO_SLACK = 127; // the server has no inputs to judge yet
-const LEAD_UP = 8; // ticks per second
+const LEAD_UP = 4; // ticks per second
 const LEAD_DOWN = 1.5;
 const SNAP = 24; // ticks off before the clock jumps instead of drifting
-const DRIFT = 0.1; // the clock runs at most this much fast or slow to catch up
+const DRIFT = 0.03; // the clock runs at most this much fast or slow to catch up (everything drawn speeds up with it)
 const DEPTH_MARGIN = 2; // ticks beyond the usual age of the newest state
-const DEPTH_UP = 30; // ticks per second
-const DEPTH_DOWN = 4;
+const DEPTH_UP = 6; // ticks per second: a changing depth speeds up or slows down the far side of the table
+const DEPTH_DOWN = 2;
 const GAP_WINDOW = 3000; // ms of state ages kept
 
 /**

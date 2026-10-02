@@ -4,7 +4,7 @@ import { serveSpot } from '../src/layout';
 import { MatchCore } from '../src/match';
 import { FREEZE_HELD, TICK } from '../src/net';
 import { MAX_MALLET_SPEED, Physics, sweepEntry, type MalletBody } from '../src/physics';
-import { lagWeight, Predictor, type Sample } from '../src/predict';
+import { DisplayTime, lagWeight, Predictor, type Sample } from '../src/predict';
 
 describe('binary frames', () => {
   it('round-trips a game state, hits, wall bounces and mallet input', () => {
@@ -221,5 +221,48 @@ describe('lagWeight', () => {
       last = w;
     }
     expect(lagWeight(m.layout, 0, { x: 0, y: 0 })).toBeCloseTo(0.5, 5);
+  });
+});
+
+describe('DisplayTime', () => {
+  /** The puck flying straight at the local goal at `speed`, drawn as NetGame draws it: its drawn speed per frame. */
+  function drawnSpeeds(speed: number, depth = 33) {
+    const pred = new Predictor(2, 1, 0);
+    const L = pred.layout;
+    const mine = L.seats[0].goalCenter;
+    const theirs = L.seats[1].goalCenter;
+    const len = Math.hypot(mine.x - theirs.x, mine.y - theirs.y);
+    const dir = { x: (mine.x - theirs.x) / len, y: (mine.y - theirs.y) / len };
+    const p = { x: theirs.x + dir.x * 2 + 2, y: theirs.y + dir.y * 2 };
+    // Mallets out of the way.
+    pred.setAuth({ tick: 0, at: 0, freeze: 0, vis: true, p: [p.x, p.y], v: [dir.x * speed, dir.y * speed], m: [-4, mine.y * 0.8, 4, theirs.y * 0.8], slack: [0, 0] });
+    const dt = 1 / 60;
+    let now = 40;
+    const time = new DisplayTime(now - depth);
+    const s: Sample = { x: 0, y: 0, vis: true, m: [] };
+    const out: { v: number; lag: number }[] = [];
+    let last: { x: number; y: number } | null = null;
+    for (let f = 0; f < 70; f++) {
+      now += dt / TICK;
+      pred.advance(Math.ceil(now));
+      let target = time.t;
+      for (let i = 0; i < 3; i++) {
+        pred.sample(target, s);
+        target = now - depth * lagWeight(L, 0, s);
+      }
+      time.update(target, dt, now, now - depth - 4);
+      const at = pred.sample(time.t, s);
+      if (last) out.push({ v: Math.hypot(at.x - last.x, at.y - last.y) / dt, lag: now - time.t });
+      last = { x: at.x, y: at.y };
+    }
+    return out;
+  }
+
+  it('changes the drawn speed of a free-flying puck gradually, never in a jump', () => {
+    const v = drawnSpeeds(10);
+    for (let i = 1; i < v.length; i++) expect(Math.abs(v[i].v - v[i - 1].v)).toBeLessThan(0.5);
+    // The far side is drawn in the past and your side in the present.
+    expect(v[0].lag).toBeGreaterThan(25);
+    expect(v[v.length - 1].lag).toBeLessThan(1);
   });
 });

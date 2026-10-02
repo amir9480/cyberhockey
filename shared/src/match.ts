@@ -3,9 +3,8 @@ import { buildLayout, serveSpot, type PlayerCount, type TableLayout, type Vec2 }
 import { SimMallet } from './mallet';
 import { Physics, PUCK_RADIUS, type MalletBody } from './physics';
 
-const STUCK_SPEED = 1.5; // puck slower than this while touching a mallet counts as stuck
-const STUCK_TIME = 1.2; // seconds stuck before we step in
-const RETREAT_TIME = 0.8; // how long a rival backs off
+const STUCK_MOVE = 1.5; // a puck that stays within this distance of one spot counts as stuck (a pinned puck jitters)...
+const STUCK_TIME = 5; // ...for this many seconds: then it is served again on the side it was stuck on
 const NUDGE_SPEED = 4; // gentle shove
 const IDLE_SPEED = 0.5; // puck slower than this with nobody near it counts as idle
 const IDLE_TIME = 2; // seconds idle before it gets nudged
@@ -57,6 +56,8 @@ export class MatchCore {
   private loser = -1;
   private pause = 0;
   private stuckFor = 0;
+  /** Where the puck was when it started touching a mallet. */
+  private stuckAt: Vec2 = { x: 0, y: 0 };
   private idleFor = 0;
   private difficulty: Difficulty = 'medium';
 
@@ -186,9 +187,9 @@ export class MatchCore {
   }
 
   /**
-   * A puck pinned between a mallet and a wall corner can sit there forever. If it hardly moves
-   * while an AI mallet touches it, those AIs back off and it gets a small nudge toward the centre.
-   * A puck lying idle where nobody is near it (e.g. on a zone boundary no AI attacks) is nudged too.
+   * A puck pinned in a corner (by a mallet, or wedged on its own) can sit there forever: if it stays in one spot for
+   * STUCK_TIME, it is served again, standing still on the serve spot of the side it was stuck on, like a new round.
+   * A puck lying idle where nobody is near it (e.g. on a zone boundary no AI attacks) is nudged toward a seat.
    */
   private freeStuckPuck(dt: number) {
     const { pos, vel } = this.physics;
@@ -210,18 +211,33 @@ export class MatchCore {
       this.idleFor = 0;
     }
 
-    // Only AIs are made to back off; a human holding the puck is left alone.
-    if (!touching.some((b) => this.ais.has(b.seat)) || speed > STUCK_SPEED) {
+    // Judged by how far it gets, not by its speed: a pinned puck can jitter fast in place.
+    if (Math.hypot(pos.x - this.stuckAt.x, pos.y - this.stuckAt.y) > STUCK_MOVE) {
       this.stuckFor = 0;
+      this.stuckAt = { x: pos.x, y: pos.y };
       return;
     }
     this.stuckFor += dt;
     if (this.stuckFor < STUCK_TIME) return;
     this.stuckFor = 0;
-    for (const b of touching) this.ais.get(b.seat)?.retreat(RETREAT_TIME);
-    const d = Math.hypot(pos.x, pos.y) || 1;
-    vel.x = (-pos.x / d) * NUDGE_SPEED;
-    vel.y = (-pos.y / d) * NUDGE_SPEED;
+    this.idleFor = 0;
+    const side = this.sideOf(pos);
+    const spot = serveSpot(this.layout, side, this.scale);
+    this.physics.reset(spot);
+    this.stuckAt = { ...spot };
+    this.emit({ t: 'serve', s: side });
+  }
+
+  /** The seat whose zone `p` is in (the nearest goal's, on a boundary). */
+  private sideOf(p: Vec2): number {
+    const inZone = this.layout.zones.findIndex((planes) => planes.every((pl) => pl.n.x * p.x + pl.n.y * p.y >= pl.d));
+    if (inZone >= 0) return inZone;
+    let best = 0;
+    for (const st of this.layout.seats) {
+      const g = this.layout.seats[best].goalCenter;
+      if (Math.hypot(p.x - st.goalCenter.x, p.y - st.goalCenter.y) < Math.hypot(p.x - g.x, p.y - g.y)) best = st.index;
+    }
+    return best;
   }
 
   private goal(conceded: number) {

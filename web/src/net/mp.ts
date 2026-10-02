@@ -23,6 +23,8 @@ export interface MpDeps {
   disengage(): void;
   lockPointer(): void;
   /** Needs a user gesture; rejects when the browser refuses. */
+  /** False where fullscreen isn't available (or is switched off for debugging): play happens without it. */
+  canFullscreen: boolean;
   goFullscreen(): Promise<void>;
   /** Back to the start screen. */
   exit(): void;
@@ -559,7 +561,7 @@ export class Multiplayer {
   /** A click on the canvas during a game: go fullscreen if we aren't, and grab the pointer. */
   grab() {
     if (!this.wantsGrab) return;
-    if (!document.fullscreenElement && document.fullscreenEnabled) {
+    if (!document.fullscreenElement && this.deps.canFullscreen && document.fullscreenEnabled) {
       void this.deps.goFullscreen().then(
         () => this.deps.lockPointer(),
         () => this.deps.lockPointer(),
@@ -569,7 +571,7 @@ export class Multiplayer {
   }
 
   onFullscreenChange() {
-    if (!document.fullscreenElement) this.selfPause();
+    if (!document.fullscreenElement && this.deps.canFullscreen) this.selfPause();
     this.updateHint();
   }
 
@@ -579,6 +581,7 @@ export class Multiplayer {
       this.active &&
       !this.selfPaused &&
       !document.fullscreenElement &&
+      this.deps.canFullscreen &&
       document.fullscreenEnabled &&
       !touch
     );

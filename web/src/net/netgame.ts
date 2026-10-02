@@ -1,9 +1,9 @@
 import { encodeIn, quantize, type StateFrame } from '@airhockey/shared/binary';
 import type { PlayerCount } from '@airhockey/shared/layout';
 import type { MatchCore, MatchEvent } from '@airhockey/shared/match';
-import { TICK, TICK_RATE } from '@airhockey/shared/net';
+import { TICK } from '@airhockey/shared/net';
 import { NetClock } from '@airhockey/shared/netclock';
-import { lagWeight, Predictor, type Sample } from '@airhockey/shared/predict';
+import { DisplayTime, lagWeight, Predictor, type Sample } from '@airhockey/shared/predict';
 import type { SeatInfo, ServerMsg } from '@airhockey/shared/protocol';
 import type { RoomSettings } from '@airhockey/shared/room';
 import type { View } from '../game/view';
@@ -31,9 +31,10 @@ type Msg<T extends ServerMsg['t']> = Extract<ServerMsg, { t: T }>;
 
 const CLOCK_SLEW = 5; // ms per second the server clock estimate may move
 const CLOCK_JUMP = 50;
-const TIME_MIN = 0.3; // the puck's time runs at least this fast...
-const TIME_MAX = 3; // ...and at most this fast, relative to real time
 const GLIDE_MAX = 6; // a correction bigger than this (table units) jumps instead of gliding
+const NEAR_ON = 1; // table units between a mallet and the puck: closer than this, the mallet is drawn at the puck's time
+const NEAR_FAR = 4; // further than this, at its own; in between, a blend
+const GLIDE_RATE = 10; // 1/s: how fast a mallet's correction fades (the puck's fades in `Match`)
 const MAX_TICKS_PER_FRAME = 60;
 
 /** Drives an online game on the `View`. See the note at the top of the file. */
@@ -59,8 +60,10 @@ export class NetGame {
   private inputTick = 0;
 
   // display
-  private puckTime = -1;
-  private malletTime: number[] = [];
+  private puckTime = new DisplayTime(0);
+  private malletTime: DisplayTime[] = [];
+  /** Like the puck's glide (`Match.glide`): a correction to each other mallet, fading away. */
+  private malletGlide: { x: number; y: number }[] = [];
   private shown: Sample = { x: 0, y: 0, vis: true, m: [] };
   private scratch: Sample = { x: 0, y: 0, vis: true, m: [] };
   /** Goals and serves from the server, played when the picture reaches them. */
@@ -118,8 +121,10 @@ export class NetGame {
     this.queued = [];
     this.state(st);
     this.pred.advance(this.inputTick);
-    this.puckTime = this.inputTick - this.clock.depth;
-    this.malletTime = this.core.mallets.map(() => this.puckTime);
+    const start = this.inputTick - this.clock.depth;
+    this.puckTime = new DisplayTime(start);
+    this.malletTime = this.core.mallets.map(() => new DisplayTime(start));
+    this.malletGlide = this.core.mallets.map(() => ({ x: 0, y: 0 }));
     this.draw(0);
   }
 
@@ -197,20 +202,26 @@ export class NetGame {
 
     this.tickClock(dt);
     this.moveOwnMallet();
-    const before = this.pred.authTick;
-    // Where the puck is drawn now, before a new state changes the prediction: the difference glides away.
-    this.pred.sample(this.puckTime, this.scratch);
+    // Where the puck and other mallets are drawn now, before a new state rewrites the prediction: the difference
+    // glides away instead of jumping.
+    this.pred.sample(this.puckTime.t, this.scratch);
     const was = { x: this.scratch.x, y: this.scratch.y };
-    this.pred.advance(this.inputTick);
-    if (this.pred.authTick !== before) {
-      this.pred.sample(this.puckTime, this.scratch);
-      const g = this.view.match!.glide;
-      const dx = was.x - this.scratch.x;
-      const dy = was.y - this.scratch.y;
-      if (Math.hypot(g.x + dx, g.y + dy) < GLIDE_MAX) {
-        g.x += dx;
-        g.y += dy;
-      } else g.x = g.y = 0;
+    const wasM = this.malletTime.map((d, s) => {
+      this.pred.sample(d.t, this.scratch);
+      return { x: this.scratch.m[s * 2], y: this.scratch.m[s * 2 + 1] };
+    });
+    if (this.pred.advance(this.inputTick)) {
+      this.pred.sample(this.puckTime.t, this.scratch);
+      addGlide(this.view.match!.glide, was.x - this.scratch.x, was.y - this.scratch.y);
+      this.malletTime.forEach((d, s) => {
+        this.pred.sample(d.t, this.scratch);
+        addGlide(this.malletGlide[s], wasM[s].x - this.scratch.m[s * 2], wasM[s].y - this.scratch.m[s * 2 + 1]);
+      });
+    }
+    const k = Math.exp(-dt * GLIDE_RATE);
+    for (const g of this.malletGlide) {
+      g.x *= k;
+      g.y *= k;
     }
     this.draw(dt);
   }
@@ -248,35 +259,41 @@ export class NetGame {
     const layout = this.pred.layout;
     const present = Math.min(this.clock.now, this.pred.latest);
     const depth = this.clock.depth;
-    const step = dt * TICK_RATE;
+    const oldest = present - depth - 4;
 
-    // The puck: its time depends on where it is, which depends on its time. A few rounds settle it.
-    let t = this.puckTime;
+    const pr = core.physics.radius;
+    // Each other mallet's own moment: by where it is (see `lagWeight`).
+    const remote = this.view.mallets
+      .filter((m) => m.seat !== this.seat)
+      .map((m) => {
+        this.pred.sample(present - depth, this.scratch);
+        const own = present - depth * lagWeight(layout, this.seat, { x: this.scratch.m[m.seat * 2], y: this.scratch.m[m.seat * 2 + 1] });
+        this.pred.sample(own, this.scratch);
+        return { m, own, x: this.scratch.m[m.seat * 2], y: this.scratch.m[m.seat * 2 + 1] };
+      });
+
+    // The puck: its time depends on where it is, which depends on its time. A few rounds settle the target.
+    let target = this.puckTime.t;
     for (let i = 0; i < 3; i++) {
-      this.pred.sample(t, this.scratch);
-      t = present - depth * lagWeight(layout, this.seat, this.scratch);
+      this.pred.sample(target, this.scratch);
+      target = present - depth * lagWeight(layout, this.seat, this.scratch);
     }
-    if (dt > 0) t = Math.max(this.puckTime + step * TIME_MIN, Math.min(this.puckTime + step * TIME_MAX, t));
-    t = Math.max(present - depth - 4, Math.min(present, t));
-    this.puckTime = t;
+    const t = this.puckTime.update(target, dt, present, oldest);
     const s = this.pred.sample(t, this.shown);
     core.physics.pos.x = s.x;
     core.physics.pos.y = s.y;
     core.visible = s.vis;
 
-    // Other mallets: each at the time of where it is.
-    this.view.mallets.forEach((m) => {
-      if (m.seat === this.seat) return;
-      this.pred.sample(present - depth, this.scratch);
-      const at = { x: this.scratch.m[m.seat * 2], y: this.scratch.m[m.seat * 2 + 1] };
-      let mt = present - depth * lagWeight(layout, this.seat, at);
-      const prev = this.malletTime[m.seat] ?? mt;
-      if (dt > 0) mt = Math.max(prev + step * TIME_MIN, Math.min(prev + step * TIME_MAX, mt));
-      mt = Math.max(present - depth - 4, Math.min(present, mt));
-      this.malletTime[m.seat] = mt;
+    // Other mallets: at their own moment, but at the puck's when close to it, so a touch is drawn as a touch (two
+    // things in contact drawn at different moments would overlap, or bounce off thin air).
+    for (const { m, own, x, y } of remote) {
+      const gap = Math.hypot(x - s.x, y - s.y) - m.sim.radius - pr;
+      const k = Math.max(0, Math.min(1, (NEAR_FAR - gap) / (NEAR_FAR - NEAR_ON)));
+      const mt = this.malletTime[m.seat].update(own + (t - own) * k, dt, present, oldest);
       this.pred.sample(mt, this.scratch);
-      m.sim.place(this.scratch.m[m.seat * 2], this.scratch.m[m.seat * 2 + 1]);
-    });
+      const g = this.malletGlide[m.seat];
+      m.sim.place(this.scratch.m[m.seat * 2] + g.x, this.scratch.m[m.seat * 2 + 1] + g.y);
+    }
 
     for (const e of this.pred.due(t)) this.fx?.(e);
     while (this.queued.length && this.queued[0].tick <= t) this.queued.shift()!.fn();
@@ -286,4 +303,12 @@ export class NetGame {
   stop() {
     this.view.onFrame = null;
   }
+}
+
+/** Add a correction to a glide offset; one too big to hide is dropped (the thing jumps). */
+function addGlide(g: { x: number; y: number }, dx: number, dy: number) {
+  if (Math.hypot(g.x + dx, g.y + dy) < GLIDE_MAX) {
+    g.x += dx;
+    g.y += dy;
+  } else g.x = g.y = 0;
 }
