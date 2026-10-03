@@ -216,11 +216,10 @@ export class Multiplayer {
   /** Enter multiplayer; `room` joins that room straight away (`auto`: on a fresh start, not by the player's choice). */
   enter(room: RoomRef | null, auto = false) {
     this.open = true;
+    this.reset();
     if (room) this.setKind(room.kind);
     this.wantedRoom = room?.id ?? null;
     this.autoJoin = auto && !!room;
-    this.room = null;
-    this.previewKey = ''; // single player may have rebuilt the table since
     setNote(ui.lobby.note, room ? 'Joining room…' : '');
     this.setScreen('lobby');
     this.socket.connect();
@@ -232,18 +231,29 @@ export class Multiplayer {
   exit() {
     if (!this.open) return;
     this.open = false;
-    this.endGameUi();
     this.mode.leave();
     this.prober.setActive(false);
     if (this.lobbyTicker) clearInterval(this.lobbyTicker);
     this.lobbyTicker = null;
     this.socket.close();
-    this.room = null;
-    this.wantedRoom = null;
-    this.showingResult = false;
-    ui.result.open = false;
+    this.reset();
     this.setUrl(null);
     this.deps.exit();
+  }
+
+  /** Forget every room and game: nothing of the last one may drive the view (`NetGame` owns its `onFrame`). */
+  private reset() {
+    this.endGameUi();
+    this.game?.stop();
+    this.game = null;
+    this.room = null;
+    this.wantedRoom = null;
+    this.autoJoin = false;
+    this.seats = [];
+    this.pings = [];
+    this.showingResult = false;
+    this.previewKey = ''; // single player may have rebuilt the table since
+    ui.result.open = false;
   }
 
   /** The player saved a new name. */

@@ -284,11 +284,23 @@ function pauseSingle() {
   show('pause');
 }
 
-/** Single player game thrown away: back to the main menu. */
-function quitSingle() {
+/**
+ * Any game thrown away (single player or online): back to the main menu, with everything as on a fresh start, so
+ * nothing of the last game leaks into the next.
+ */
+function toMenu() {
   setPlaying(false);
-  ui.result.open = false;
   ui.mode = 'menu';
+  peek(false);
+  ui.hint = false;
+  ui.waiting = false;
+  ui.result.open = false;
+  ui.banner.open = false;
+  view.onFrame = null; // only an online game sets it; mp stops its own, this makes sure
+  // This player's own rules and table again: an online room may have replaced them.
+  setMalletScale(ui.sp.malletScale);
+  setWinScore(ui.sp.winScore);
+  setPlayers(ui.sp.players);
   const url = new URL(location.href);
   url.searchParams.delete('players');
   history.replaceState(null, '', url);
@@ -318,6 +330,17 @@ addEventListener('keydown', (e) => {
   if (e.key !== 'Escape' || document.fullscreenElement || DEBUG) return;
   if (ui.mode === 'sp') pauseSingle();
   else if (ui.mode === 'mp') mp.selfPause();
+});
+
+// Alt-tab (the window loses focus) or switching tabs pauses, like leaving fullscreen. Debug: no, as with Esc.
+function pauseAway() {
+  if (DEBUG) return;
+  if (ui.mode === 'sp') pauseSingle();
+  else if (ui.mode === 'mp') mp.selfPause();
+}
+addEventListener('blur', pauseAway);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) pauseAway();
 });
 
 // Clicking while playing re-grabs the pointer (e.g. after alt-tab).
@@ -355,11 +378,7 @@ const mp: Multiplayer = new Multiplayer({
     if (!canFullscreen) return Promise.reject(new Error('no fullscreen'));
     return document.documentElement.requestFullscreen({ navigationUI: 'hide' });
   },
-  exit() {
-    ui.mode = 'menu';
-    if (document.fullscreenElement) void document.exitFullscreen();
-    show('home');
-  },
+  exit: toMenu,
   countdown,
 });
 
@@ -538,7 +557,7 @@ Alpine.data('app', () => ({
     void start();
   },
   spBack() {
-    quitSingle();
+    toMenu();
   },
 
   // Settings.
@@ -595,7 +614,7 @@ Alpine.data('app', () => ({
   /** QUIT / LEAVE / BACK out of the current mode, to the main menu. */
   quit() {
     if (ui.mode === 'mp') mp.exit();
-    else quitSingle();
+    else toMenu();
   },
 
   // Multiplayer: lobby, room, pause banner.
