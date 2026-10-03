@@ -9,6 +9,10 @@ precision highp float;
 #define WALL_GLOW 0.15 // light spilling from the walls onto the floor
 #define HALO_GLOW 0.07 // soft haze outside the table
 #define BEAM_STRENGTH 0.32 // goal spotlight brightness: lower = dimmer
+#define SPEC_STRENGTH 0.8  // metal floor's reflection of the goal force fields: lower = dimmer
+#define SPEC_ROUGH 0.07    // blur of that reflection per unit of distance: higher = softer, wider
+#define SHEEN 0.18         // wide, faint lobe around the sharp reflection
+#define PLATE_TILT 0.035   // each hex plate is tilted a little, so reflections break up plate by plate
 
 uniform float uTime;
 uniform int uCount;
@@ -42,6 +46,9 @@ uniform vec3 uRipCol[MAX_RIP];
 uniform float uKick;         // 0..1 impulse from hits and goals
 uniform vec3 uPuck;          // xy position, z 1 when shown
 uniform float uRadius;       // table radius
+uniform vec2 uGF[MAX_N];     // goal force fields: base centre (on the walls' inner face)
+uniform vec2 uGT[MAX_N];     // goal force fields: direction of their uv.x (as in buildGoalFields)
+uniform float uFieldH;       // goal force field height
 
 in vec2 vP;
 out vec4 outColor;
@@ -90,13 +97,26 @@ float lineMask(float d, float w, float aa) {
   return 1.0 - smoothstep(w - aa, w + aa, d);
 }
 
-// Distance from p to the nearest edge of a hexagonal tiling (cells 1 unit across the flats).
-float hexEdge(vec2 p) {
+// Hexagonal tiling, cells 1 unit across the flats: xy = p relative to its cell's centre, zw = that centre.
+vec4 hexCell(vec2 p) {
   const vec2 s = vec2(1.0, 1.7320508);
   vec2 a = mod(p, s) - s * 0.5;
   vec2 b = mod(p - s * 0.5, s) - s * 0.5;
-  vec2 q = abs(dot(a, a) < dot(b, b) ? a : b);
-  return 0.5 - max(dot(q, s * 0.5), q.x);
+  vec2 q = dot(a, a) < dot(b, b) ? a : b;
+  return vec4(q, p - q);
+}
+
+// Distance from a point at `q` (relative to its cell's centre) to the cell's edge.
+float hexEdge(vec2 q) {
+  q = abs(q);
+  return 0.5 - max(dot(q, vec2(0.5, 0.8660254)), q.x);
+}
+
+// Cheap hash without sin (precise on old GPUs): 0..1 per cell.
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
 }
 
 // Dashes around a circle: `count` per turn, `duty` of each lit, turning at `spin` turns/s.
@@ -121,11 +141,10 @@ void main() {
   // Dark glossy base.
   vec3 col = vec3(0.012, 0.010, 0.028) + vec3(0.02, 0.014, 0.05) * exp(-dot(p, p) * 0.012);
 
-  // Anti-aliased grid, pulsing outward from the center.
-  vec2 g = p / 1.0;
-  vec2 gw = fwidth(g);
-  vec2 gl = abs(fract(g - 0.5) - 0.5) / max(gw, vec2(1e-4));
-  float grid = 1.0 - min(min(gl.x, gl.y), 1.0);
+  // Hex grid: one cell lookup per pixel, lines a pixel or so wide whatever the distance.
+  vec4 hc = hexCell(p);
+  float he = hexEdge(hc.xy);
+  float hw = max(fwidth(he), 1e-4);
   vec3 gridCol = mix(neon(uTime * 0.035), winN, uWinAmt);
 
   // The grid wakes up around the mallets and puck...
@@ -139,7 +158,8 @@ void main() {
   // ...behind a scan ring that sweeps out from the center now and then...
   float scanR = mod(uTime, SCAN_PERIOD) * SCAN_SPEED;
   float scan = exp(-pow(length(p) - scanR, 2.0) * 1.5) * (1.0 - smoothstep(uRadius * 0.6, uRadius, scanR));
-  // ...and under ripples from every hit.
+  // ...and under ripples from every hit: a soft band running outward that lights up only the hex lines it crosses
+  // (brighter and a little thicker), strongest for goals.
   vec3 rip = vec3(0.0);
   for (int i = 0; i < MAX_RIP; i++) {
     vec4 r = uRip[i];
@@ -148,23 +168,24 @@ void main() {
     float w = 0.25 + age * 0.8;
     float dd = length(p - r.xy) - age * RIPPLE_SPEED;
     float fade = 1.0 - age / RIPPLE_LIFE;
-    float crisp = lineMask(abs(dd), 0.05, aa * 1.5); // sharp leading edge on top of the soft band
-    rip += uRipCol[i] * (exp(-dd * dd / (w * w)) * 0.6 + crisp) * fade * fade * r.w;
+    rip += uRipCol[i] * exp(-dd * dd / (w * w)) * fade * fade * r.w;
   }
-  col += gridCol * grid * 0.07 * (1.0 + uWinAmt * 2.0 + lit * 5.0 + scan * 3.0);
-  col += rip * (0.35 + grid * 1.5);
+  float ripI = min(max(rip.r, max(rip.g, rip.b)), 2.0);
+  float hex = 1.0 - smoothstep(0.0, hw * (1.2 + ripI * 1.5), he);
+  col += gridCol * hex * 0.07 * (1.0 + uWinAmt * 2.0 + lit * 5.0 + scan * 3.0);
+  col += rip * hex * 2.0;
 
-  // Faint hexagonal plating under the grid.
+  // Now and then a few cells flicker on: a quick soft fill, brightest at the rim.
   if (uFx > 0.5) {
-    vec2 hp = p * 0.9;
-    float he = hexEdge(hp);
-    float hex = lineMask(he, 0.0, fwidth(hp.x) * 1.2);
-    col += gridCol * hex * 0.018 * (1.0 + lit * 3.0 + scan * 2.0);
+    float h = hash12(hc.zw);
+    float f = fract(uTime * (0.05 + h * 0.07) + h * 7.0);
+    float on = step(0.6, fract(h * 13.7)) * smoothstep(0.0, 0.015, f) * (1.0 - smoothstep(0.015, 0.06, f));
+    col += gridCol * on * (0.025 + 0.06 * (1.0 - smoothstep(0.0, 0.18, he)));
   }
   col += winN * uWinAmt * 0.05 * exp(-dot(p, p) * 0.01);
 
   // Inner glow hugging the walls.
-  col += edgeCol * exp(sd * 1.6) * WALL_GLOW;
+  col += edgeCol * exp(sd * 4.0) * WALL_GLOW;
 
   // Center markings.
   vec3 mark = mix(neon(uTime * 0.035 + 0.5), winN, uWinAmt);
@@ -188,7 +209,18 @@ void main() {
   }
   col += mark * (ring + dotc + divs) * 0.5 * (1.0 + uWinAmt * 0.8);
 
-  // Goals: crease arc + spotlight, tinted per seat.
+  // Brushed metal plating: the view ray bounces off the floor (each hex plate slightly tilted, slightly rougher or
+  // smoother) and is traced into the goal force fields below, which act as area lights.
+  vec3 P = vec3(p.x, 0.0, p.y);
+  vec3 V = normalize(cameraPosition - P);
+  float plate = hash12(hc.zw);
+  vec2 tilt = vec2(hash12(hc.zw + 17.3), hash12(hc.zw + 41.9)) - 0.5;
+  vec3 N = normalize(vec3(tilt.x * PLATE_TILT, 1.0, tilt.y * PLATE_TILT));
+  vec3 R = reflect(-V, N);
+  float rough = SPEC_ROUGH * (0.7 + 0.6 * plate);
+  float fres = 0.65 + 0.35 * pow(1.0 - max(dot(N, V), 0.0), 5.0); // metal: reflective even head on
+
+  // Goals: crease arc + spotlight + reflected force field, tinted per seat.
   for (int s = 0; s < MAX_N; s++) {
     if (s >= uSeats) break;
     vec2 q = p - uGC[s];
@@ -227,10 +259,42 @@ void main() {
     float flash = (s == uWinSeat) ? uFlash : 0.0; // the scorer's spotlight flashes
     col += gc * (arc * 0.45 * (1.0 + flash * 3.0) + beam * BEAM_STRENGTH * (1.0 + flash * 7.0));
     col += vec3(flash * beam * 0.5);
+
+    // Reflection of this goal's force field: the bounced ray meets the field's plane at (u, v) in the field's own uv,
+    // where the field is drawn exactly as goal.frag draws it (same colour, scan lines, shimmer and fades). Roughness
+    // times distance blurs it: the scan lines smear into their average, the edges soften.
+    float toward = -dot(R.xz, n);
+    float back = dot(p - uGF[s], n); // distance from the field's plane, inside the table
+    if (toward > 1e-3 && back > 0.0) {
+      float dist = back / toward;
+      vec3 H = P + R * dist;
+      float u = dot(H.xz - uGF[s], uGT[s]) / uGW + 0.5;
+      float v = H.y / uFieldH;
+      float bu = rough * dist / uGW + 1e-3; // blur, in field uv
+      float bv = rough * dist / uFieldH + 1e-3;
+      // goal.frag's field, with each term blurred by bu/bv.
+      vec3 fc = mix(uGCol[s], uWinColor, uWinAmt);
+      fc *= 0.6 / max(dot(fc, vec3(0.2126, 0.7152, 0.0722)), 0.1);
+      float lines = pow(0.5 + 0.5 * sin(v * 38.0 - uTime * 5.0), 8.0);
+      lines = mix(lines, 0.2, smoothstep(0.004, 0.03, bv)); // too blurred to resolve: their average
+      float shimmer = 0.75 + 0.25 * sin(u * 23.0 + uTime * 3.0) * sin(u * 9.0 - uTime * 2.1);
+      float near = uPuck.z * exp(-dot(uPuck.xy - uGC[s], uPuck.xy - uGC[s]) * 0.12);
+      float vc = clamp(v, 0.0, 1.0);
+      float fade = pow(1.0 - vc, 1.6)
+        * smoothstep(-bu, 0.06 + bu, u) * (1.0 - smoothstep(0.94 - bu, 1.0 + bu, u))
+        * smoothstep(-bv, bv, v);
+      float field = (0.12 + lines * 0.35 * shimmer + near * 0.6 + uKick * 0.3) * fade;
+      // Wide faint sheen around it, so rough plates still catch some of the field's light.
+      float wu = bu * 6.0 + 0.1;
+      float wv = bv * 6.0 + 0.1;
+      float sheen = smoothstep(-wu, wu, u) * (1.0 - smoothstep(1.0 - wu, 1.0 + wu, u)) * smoothstep(-wv, wv, v) * exp(-max(v, 0.0) * 2.0);
+      float glint = (field + sheen * SHEEN * (0.2 + near * 0.6 + uKick * 0.3)) * fres / (1.0 + dist * 0.12);
+      col += fc * glint * SPEC_STRENGTH * (1.0 + flash * 3.0);
+    }
   }
 
   // Outside the table: soft neon halo that fades into the dark.
-  float halo = exp(-max(sd, 0.0) * 0.7) * HALO_GLOW;
+  float halo = exp(-max(sd, 0.0) * 2.5) * HALO_GLOW;
   vec3 haloCol = edgeCol * halo;
 
   vec3 rgb = mix(haloCol, col, inside);

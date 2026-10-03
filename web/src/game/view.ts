@@ -21,6 +21,7 @@ import { WinEffect } from './effects';
 import { setSeatColors } from './colors';
 import { Sound } from './sound';
 import { CyberFx, type FxLevel } from './cyber';
+import type { NameAnchor, SeatNames } from './seatnames';
 
 const SIM_STEP = 1 / 240; // fixed simulation step, seconds
 const MAX_STEPS = 60; // at most 0.25 s of catch-up per frame
@@ -47,6 +48,10 @@ void main() {
 export const DEFAULT_PITCH = 50;
 export const MIN_PITCH = 15;
 export const MAX_PITCH = 89; // not 90: looking exactly down makes lookAt degenerate
+/** Camera zoom, percent of the distance that just fits the table: above 100 is closer, below is further. */
+export const DEFAULT_ZOOM = 100;
+export const MIN_ZOOM = 60;
+export const MAX_ZOOM = 160;
 
 // Countdown cinematic: the camera orbits the table, lingering low behind each opponent and whipping on to the next
 // seat on each count, ending behind the player when play starts.
@@ -78,6 +83,10 @@ export class View {
   private aim = new THREE.PerspectiveCamera(36, 1, 0.1, 200);
   /** The countdown cinematic running: seconds of countdown it spans and has left, and seconds since it hit 0. */
   private cine: { total: number; left: number; after: number } | null = null;
+  /** Players' name labels, shown during the countdown cinematic. */
+  names: SeatNames | null = null;
+  /** Labels were placed last frame (so the frame after the last one hides them, and idle frames skip the work). */
+  private namesShown = false;
   private table: Table | null = null;
   /** The local player's mallet. */
   mallet: Mallet | null = null;
@@ -114,6 +123,8 @@ export class View {
   private probe: { t0: number; startAt: number; frames: number; warmup: number; window: number; done: (fps: number) => void } | null = null;
   readonly sound = new Sound();
   private pitch = THREE.MathUtils.degToRad(DEFAULT_PITCH);
+  /** Player's camera distance, relative to the one that just fits the table (0.5 = twice as close). */
+  private dist = 1;
   scores: Scoreboard | null = null;
   private last = performance.now();
   private ray = new THREE.Raycaster();
@@ -128,7 +139,7 @@ export class View {
 
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.3, 0.7, 0.3);
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.25, 0.2, 0.45);
     this.composer.addPass(this.bloom);
     this.output = new OutputPass();
     this.composer.addPass(this.output);
@@ -225,6 +236,7 @@ export class View {
   }
 
   private teardown() {
+    this.names?.clear();
     if (this.table) {
       this.scene.remove(this.table.group);
       this.table.dispose();
@@ -258,6 +270,11 @@ export class View {
     this.camDir = { x: -inward.x, y: -inward.y };
     this.table!.setShadows(QUALITY[this.quality].shadows);
     this.fitCamera();
+  }
+
+  /** Points that win the current game. */
+  get winScore() {
+    return this.room.winScore;
   }
 
   /** Apply room rules live (mallet size resizes every mallet immediately). */
@@ -294,6 +311,12 @@ export class View {
     this.fitCamera();
   }
 
+  /** Camera zoom in percent (see DEFAULT_ZOOM). */
+  setZoom(percent: number) {
+    this.dist = 100 / Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, percent));
+    this.fitCamera();
+  }
+
   setDifficulty(d: Difficulty) {
     this.difficulty = d;
     this.match?.setDifficulty(d);
@@ -325,9 +348,9 @@ export class View {
     this.cyber.pxScale.value = (h * dpr) / (2 * Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2));
   };
 
-  /** The player's own view: behind their goal, at their chosen tilt. */
+  /** The player's own view: behind their goal, at their chosen tilt and zoom. */
   private get playerShot(): Shot {
-    return { dir: this.camDir, pitch: this.pitch, zoom: 1 };
+    return { dir: this.camDir, pitch: this.pitch, zoom: this.dist };
   }
 
   /** Re-fit the player's view (aim camera, and the rendered one unless the cinematic owns it). */
@@ -464,7 +487,7 @@ export class View {
       return shot(
         from + (to - from) * k,
         CINE_PITCH + (this.pitch - CINE_PITCH) * home,
-        CINE_ZOOM + (1 - CINE_ZOOM) * home,
+        CINE_ZOOM + (this.dist - CINE_ZOOM) * home,
       );
     }
     return j === m ? this.playerShot : shot(at(j, e), CINE_PITCH, CINE_ZOOM);
@@ -482,6 +505,20 @@ export class View {
       }
     }
     this.fit(this.camera, this.cineShot(c.total - c.left + c.after, c.total));
+  }
+
+  /** While counting down in the cinematic: a spot just above each mallet, as the rendered camera sees it. */
+  private nameAnchors(): NameAnchor[] {
+    if (!this.cine || this.cine.left <= 0) return [];
+    const out: NameAnchor[] = [];
+    const v = new THREE.Vector3();
+    for (const m of this.mallets) {
+      const p = m.shown;
+      v.set(p.x, m.radius * 1.8, p.y).project(this.camera);
+      if (v.z > 1) continue; // behind the camera
+      out.push({ seat: m.seat, x: ((v.x + 1) / 2) * innerWidth, y: ((1 - v.y) / 2) * innerHeight });
+    }
+    return out;
   }
 
   /** Screen px (client coords) to a point on the table plane, as the player sees it. */
@@ -531,6 +568,9 @@ export class View {
     this.onFrame?.(dt, now);
     this.updateCinematic(dt);
     for (const m of this.mallets) m.sync();
+    const anchors = this.nameAnchors();
+    if (anchors.length || this.namesShown) this.names?.update(anchors);
+    this.namesShown = anchors.length > 0;
     this.scores?.update();
     if (this.ball) this.ball.update(dt);
     // Everything that casts a shadow from the goal lights.

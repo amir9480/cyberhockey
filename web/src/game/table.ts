@@ -240,6 +240,17 @@ export function createTable(players: PlayerCount, fx: WinUniforms, cyber: CyberU
       uKick: cyber.uKick,
       uPuck: cyber.uPuck,
       uRadius: { value: layout.radius },
+      // Goal force fields (see buildGoalFields): base centre on the walls' inner face, and height.
+      uGF: {
+        value: pad4(
+          layout.seats.map((s) => ({
+            x: s.goalCenter.x + s.inward.x * WALL_THICKNESS,
+            y: s.goalCenter.y + s.inward.y * WALL_THICKNESS,
+          })),
+        ),
+      },
+      uGT: { value: pad4(layout.seats.map((s) => s.tangent)) },
+      uFieldH: { value: FIELD_HEIGHT },
     },
   });
   const floor = new THREE.Mesh(floorGeo, floorMat);

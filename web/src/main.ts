@@ -1,4 +1,4 @@
-import { View, DEFAULT_PITCH, QUALITIES, type Quality } from './game/view';
+import { View, DEFAULT_PITCH, MIN_PITCH, MAX_PITCH, DEFAULT_ZOOM, MIN_ZOOM, MAX_ZOOM, QUALITIES, type Quality } from './game/view';
 import { Input } from './game/input';
 import type { PlayerCount } from '@airhockey/shared/layout';
 import { DEFAULT_ROOM, clampMalletScale, clampWinScore } from '@airhockey/shared/room';
@@ -7,9 +7,10 @@ import { PALETTE_HEX, assignSeatColors, seatColor } from './game/colors';
 import { getName, setName } from './net/identity';
 import { Multiplayer, savedRoom, type Standing } from './net/mp';
 import { Countdown } from './game/countdown';
+import { SeatNames } from './game/seatnames';
+import { Alpine, css, focusIn, setNote, show, ui, type Screen } from './ui';
 
 const canvas = document.getElementById('view') as HTMLCanvasElement;
-const buttons = [...document.querySelectorAll<HTMLButtonElement>('#modes button')];
 const view = new View(canvas);
 /**
  * Debug: `?debug` plays without fullscreen (the mouse follows the cursor, no pointer lock needed), Esc doesn't pause,
@@ -18,250 +19,135 @@ const view = new View(canvas);
 const DEBUG = new URLSearchParams(location.search).has('debug');
 const input = new Input(view, canvas);
 
-const parse = (v: string | null): PlayerCount => (v === '3' ? 3 : v === '4' ? 4 : 2);
-const byId = (id: string) => document.getElementById(id) as HTMLElement;
+const parse = (v: string | number | null): PlayerCount => (String(v) === '3' ? 3 : String(v) === '4' ? 4 : 2);
 /** Seconds of 3, 2, 1 before the puck moves: at the start and after every pause. */
 const COUNTDOWN = 3;
+const SENS_MIN = 0.25;
+const SENS_MAX = 5;
 
-let players: PlayerCount = 2;
-let myColor = 0;
-
-// --- screens -----------------------------------------------------------------
-// One overlay at a time ('none' while playing). Fresh start: name, then the room you were in or the main menu.
-type Screen = 'name' | 'home' | 'spSetup' | 'settings' | 'pause' | 'lobby' | 'room' | 'none';
-const SCREENS: Record<Exclude<Screen, 'none'>, HTMLElement> = {
-  name: byId('nameScreen'),
-  home: byId('home'),
-  spSetup: byId('spSetup'),
-  settings: byId('settings'),
-  pause: byId('pause'),
-  lobby: byId('lobby'),
-  room: byId('room'),
-};
-let screen: Screen = 'name';
-/** Where BACK on the settings screen goes: the main menu or the pause menu. */
-let settingsFrom: Screen = 'home';
-
-function show(s: Screen) {
-  screen = s;
-  for (const [k, el] of Object.entries(SCREENS)) el.hidden = k !== s;
-  if (s !== 'none') SCREENS[s].querySelector<HTMLElement>('.primary')?.focus({ preventScroll: true });
-}
-
-// menu: no game. sp: a single player game (its setup, play and pause). mp: multiplayer, which drives its own screens.
-type Mode = 'menu' | 'sp' | 'mp';
-let mode: Mode = 'menu';
-const countdown = new Countdown(byId('countdown'), view.sound);
+const countdown = new Countdown(document.getElementById('countdown') as HTMLElement, view.sound);
 view.onCountdown = (secs) => countdown.set(secs);
 
+/** A number from localStorage, or `fallback` when missing, invalid or storage is unavailable. */
+function loadNumber(key: string, fallback: number): number {
+  try {
+    const v = Number(localStorage.getItem(key));
+    return v > 0 ? v : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function load(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null; // storage unavailable
+  }
+}
+
+function save(key: string, value: string | number) {
+  try {
+    localStorage.setItem(key, String(value));
+  } catch {
+    /* storage unavailable: setting just won't persist */
+  }
+}
+
+// --- players ---------------------------------------------------------------------
 function setPlayers(n: PlayerCount) {
-  players = n;
-  assignSeatColors(myColor); // rivals re-roll their colours whenever the table is rebuilt
+  ui.sp.players = n;
+  assignSeatColors(ui.sp.color); // rivals re-roll their colours whenever the table is rebuilt
   view.setPlayers(n);
-  for (const b of buttons) b.setAttribute('aria-pressed', String(Number(b.dataset.n) === n));
-  if (mode === 'sp') syncPlayersUrl();
+  if (ui.mode === 'sp') syncPlayersUrl();
 }
 
 function syncPlayersUrl() {
   const url = new URL(location.href);
-  url.searchParams.set('players', String(players));
+  url.searchParams.set('players', String(ui.sp.players));
   url.searchParams.delete('room');
   history.replaceState(null, '', url);
 }
 
-for (const b of buttons) b.addEventListener('click', () => setPlayers(parse(b.dataset.n ?? null)));
 addEventListener('keydown', (e) => {
-  if (screen === 'spSetup' && (e.key === '2' || e.key === '3' || e.key === '4')) setPlayers(parse(e.key));
+  if (ui.screen === 'spSetup' && (e.key === '2' || e.key === '3' || e.key === '4')) setPlayers(parse(e.key));
 });
 
 // --- sensitivity (persisted) ------------------------------------------------
 const SENS_KEY = 'airhockey.sens';
-const sensInput = document.getElementById('sensInput') as HTMLInputElement;
-const sensOut = document.getElementById('sensOut') as HTMLOutputElement;
 
 function setSens(v: number) {
-  const min = Number(sensInput.min);
-  const max = Number(sensInput.max);
-  input.sensitivity = Math.min(max, Math.max(min, v));
-  sensInput.value = String(input.sensitivity);
-  sensOut.value = input.sensitivity.toFixed(2);
+  input.sensitivity = Math.min(SENS_MAX, Math.max(SENS_MIN, v));
+  ui.settings.sens = input.sensitivity;
 }
-
-try {
-  const saved = Number(localStorage.getItem(SENS_KEY));
-  setSens(saved > 0 ? saved : 1);
-} catch {
-  setSens(1);
-}
-sensInput.addEventListener('input', () => {
-  setSens(Number(sensInput.value));
-  try {
-    localStorage.setItem(SENS_KEY, String(input.sensitivity));
-  } catch {
-    /* storage unavailable: setting just won't persist */
-  }
-});
+setSens(loadNumber(SENS_KEY, 1));
 
 // --- camera angle (persisted) ------------------------------------------------
 const PITCH_KEY = 'airhockey.pitch';
-const pitchInput = document.getElementById('pitchInput') as HTMLInputElement;
-const pitchOut = document.getElementById('pitchOut') as HTMLOutputElement;
 
 function setPitch(deg: number) {
-  const v = Math.min(Number(pitchInput.max), Math.max(Number(pitchInput.min), deg));
+  const v = Math.min(MAX_PITCH, Math.max(MIN_PITCH, deg));
   view.setPitch(v);
-  pitchInput.value = String(v);
-  pitchOut.value = `${Math.round(v)}°`;
+  ui.settings.pitch = v;
   return v;
 }
+setPitch(loadNumber(PITCH_KEY, DEFAULT_PITCH));
 
-try {
-  const saved = Number(localStorage.getItem(PITCH_KEY));
-  setPitch(saved > 0 ? saved : DEFAULT_PITCH);
-} catch {
-  setPitch(DEFAULT_PITCH);
+// --- camera zoom (persisted) ------------------------------------------------
+const ZOOM_KEY = 'airhockey.zoom';
+
+function setZoom(percent: number) {
+  const v = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, percent));
+  view.setZoom(v);
+  ui.settings.zoom = v;
+  return v;
 }
-pitchInput.addEventListener('input', () => {
-  const v = setPitch(Number(pitchInput.value));
-  try {
-    localStorage.setItem(PITCH_KEY, String(v));
-  } catch {
-    /* setting just won't persist */
-  }
-});
+setZoom(loadNumber(ZOOM_KEY, DEFAULT_ZOOM));
 
-// --- mallet size: a room rule (persisted locally for now) ------------------------
+// --- mallet size and points to win: room rules (persisted locally for single player) ------
 const MALLET_KEY = 'airhockey.malletScale';
-const malletInput = document.getElementById('malletInput') as HTMLInputElement;
-const malletOut = document.getElementById('malletOut') as HTMLOutputElement;
+const WIN_KEY = 'airhockey.winScore';
 
 function setMalletScale(v: number) {
   const scale = clampMalletScale(v);
   view.setRoom({ malletScale: scale });
-  malletInput.value = String(scale);
-  malletOut.value = `${Math.round(scale * 100)}%`;
+  ui.sp.malletScale = scale;
   return scale;
 }
-
-try {
-  const saved = Number(localStorage.getItem(MALLET_KEY));
-  setMalletScale(saved > 0 ? saved : DEFAULT_ROOM.malletScale);
-} catch {
-  setMalletScale(DEFAULT_ROOM.malletScale);
-}
-malletInput.addEventListener('input', () => {
-  const v = setMalletScale(Number(malletInput.value));
-  try {
-    localStorage.setItem(MALLET_KEY, String(v));
-  } catch {
-    /* setting just won't persist */
-  }
-});
-
-// --- points to win: a room rule (persisted locally for now) ------------------------
-const WIN_KEY = 'airhockey.winScore';
-const winInput = document.getElementById('winInput') as HTMLInputElement;
-const winOut = document.getElementById('winOut') as HTMLOutputElement;
+setMalletScale(loadNumber(MALLET_KEY, DEFAULT_ROOM.malletScale));
 
 function setWinScore(v: number) {
   const n = clampWinScore(v);
   view.setRoom({ winScore: n });
-  winInput.value = String(n);
-  winOut.value = String(n);
+  ui.sp.winScore = n;
   return n;
 }
+setWinScore(loadNumber(WIN_KEY, DEFAULT_ROOM.winScore));
 
-try {
-  const saved = Number(localStorage.getItem(WIN_KEY));
-  setWinScore(saved > 0 ? saved : DEFAULT_ROOM.winScore);
-} catch {
-  setWinScore(DEFAULT_ROOM.winScore);
-}
-winInput.addEventListener('input', () => {
-  const n = setWinScore(Number(winInput.value));
-  try {
-    localStorage.setItem(WIN_KEY, String(n));
-  } catch {
-    /* setting just won't persist */
-  }
-});
-
-// While the camera angle or mallet size is being changed the menu fades, so the table behind it shows.
+// While the camera angle, zoom or mallet size is being changed the menu fades, so the table behind it shows.
 let peekTimer: ReturnType<typeof setTimeout> | null = null;
-function peek(on: boolean) {
+/** The slider the fade belongs to: only it can end the fade by losing focus. */
+let peekEl: EventTarget | null = null;
+function peek(on: boolean, el: EventTarget | null = null) {
   if (peekTimer) clearTimeout(peekTimer);
   peekTimer = null;
-  document.body.classList.toggle('peek', on);
-}
-for (const el of [pitchInput, malletInput, byId('roomMallet')]) {
-  el.addEventListener('pointerdown', () => peek(true));
-  for (const ev of ['pointerup', 'pointercancel', 'blur'] as const) el.addEventListener(ev, () => peek(false));
-  el.addEventListener('keydown', () => {
-    // Keyboard changes have no release: fade back a moment after the last key.
-    peek(true);
-    peekTimer = setTimeout(() => peek(false), 800);
-  });
+  peekEl = on ? el : null;
+  ui.peek = on;
 }
 
 // --- audio (persisted, both on by default) -----------------------------------
 const audioKeys = { music: 'airhockey.music', sfx: 'airhockey.sfx' } as const;
-const audioButtons = [...document.querySelectorAll<HTMLButtonElement>('#audio button')];
 
 function setAudio(kind: 'music' | 'sfx', on: boolean) {
   if (kind === 'music') view.sound.setMusic(on);
   else view.sound.setSfx(on);
-  const b = audioButtons.find((x) => x.dataset.k === kind);
-  if (b) {
-    b.setAttribute('aria-pressed', String(on));
-    b.textContent = `${kind === 'music' ? 'MUSIC' : 'SOUND FX'} ${on ? 'ON' : 'OFF'}`;
-  }
+  ui.settings[kind] = on;
 }
+for (const kind of ['music', 'sfx'] as const) setAudio(kind, load(audioKeys[kind]) !== '0');
 
-for (const kind of ['music', 'sfx'] as const) {
-  let on = true;
-  try {
-    on = localStorage.getItem(audioKeys[kind]) !== '0';
-  } catch {
-    /* storage unavailable: default on */
-  }
-  setAudio(kind, on);
-}
-for (const b of audioButtons) {
-  b.addEventListener('click', () => {
-    const kind = b.dataset.k as 'music' | 'sfx';
-    const on = b.getAttribute('aria-pressed') !== 'true';
-    setAudio(kind, on);
-    try {
-      localStorage.setItem(audioKeys[kind], on ? '1' : '0');
-    } catch {
-      /* setting just won't persist */
-    }
-  });
-}
 // --- FPS / ping display (persisted, on by default) -------------------------------
 const HUD_KEY = 'airhockey.hud';
-const hudToggle = byId('hudToggle');
-
-function setHud(on: boolean) {
-  document.body.classList.toggle('nohud', !on);
-  hudToggle.setAttribute('aria-pressed', String(on));
-  hudToggle.textContent = `SHOW FPS / PING ${on ? 'ON' : 'OFF'}`;
-}
-
-try {
-  setHud(localStorage.getItem(HUD_KEY) !== '0');
-} catch {
-  setHud(true);
-}
-hudToggle.addEventListener('click', () => {
-  const on = hudToggle.getAttribute('aria-pressed') !== 'true';
-  setHud(on);
-  try {
-    localStorage.setItem(HUD_KEY, on ? '1' : '0');
-  } catch {
-    /* setting just won't persist */
-  }
-});
+ui.settings.hud = load(HUD_KEY) !== '0';
 
 // UI feedback: every button click, and a tick while dragging a slider.
 document.addEventListener('click', (e) => {
@@ -277,27 +163,12 @@ addEventListener('keydown', unlockAudio, { once: true });
 
 // --- graphics quality (persisted; auto-detected on first run) ------------------
 const QUALITY_KEY = 'airhockey.quality';
-const qualitySelect = document.getElementById('quality') as HTMLSelectElement;
 const TARGET_FPS = 56; // a 60 Hz display averages a little under 60
 
 function setQuality(q: Quality) {
   view.setQuality(q);
-  qualitySelect.value = q;
+  ui.settings.quality = q;
 }
-
-function saveQuality(q: Quality) {
-  try {
-    localStorage.setItem(QUALITY_KEY, q);
-  } catch {
-    /* setting just won't persist */
-  }
-}
-
-qualitySelect.addEventListener('change', () => {
-  const q = qualitySelect.value as Quality;
-  setQuality(q);
-  saveQuality(q);
-});
 
 /** Try High, then Medium; keep the best level that holds ~60 FPS, else Low. */
 async function detectQuality(): Promise<Quality> {
@@ -310,102 +181,52 @@ async function detectQuality(): Promise<Quality> {
 
 // --- difficulty (persisted) --------------------------------------------------
 const DIFF_KEY = 'airhockey.difficulty';
-const diffButtons = [...document.querySelectorAll<HTMLButtonElement>('#difficulty button')];
 
 function setDifficulty(d: Difficulty) {
   view.setDifficulty(d);
-  for (const b of diffButtons) b.setAttribute('aria-pressed', String(b.dataset.d === d));
+  ui.sp.difficulty = d;
 }
-
-let savedDiff: Difficulty = 'medium';
-try {
-  const v = localStorage.getItem(DIFF_KEY) as Difficulty | null;
-  if (v && DIFFICULTIES.includes(v)) savedDiff = v;
-} catch {
-  /* storage unavailable */
-}
-setDifficulty(savedDiff);
-for (const b of diffButtons) {
-  b.addEventListener('click', () => {
-    const d = b.dataset.d as Difficulty;
-    setDifficulty(d);
-    try {
-      localStorage.setItem(DIFF_KEY, d);
-    } catch {
-      /* setting just won't persist */
-    }
-  });
-}
+const savedDiff = load(DIFF_KEY) as Difficulty | null;
+setDifficulty(savedDiff && DIFFICULTIES.includes(savedDiff) ? savedDiff : 'medium');
 
 // --- player colour (persisted) -------------------------------------------------
 const COLOR_KEY = 'airhockey.color';
-const colorBox = document.getElementById('colors') as HTMLElement;
-const swatches = PALETTE_HEX.map((hex, i) => {
-  const b = document.createElement('button');
-  const css = `#${hex.toString(16).padStart(6, '0')}`;
-  b.style.setProperty('--c', css);
-  b.setAttribute('aria-label', `Colour ${i + 1}`);
-  b.addEventListener('click', () => {
-    if (i === myColor) return;
-    setColor(i);
-    try {
-      localStorage.setItem(COLOR_KEY, String(i));
-    } catch {
-      /* setting just won't persist */
-    }
-    setPlayers(players); // rebuild so every mallet, light and score takes its new colour
-  });
-  colorBox.appendChild(b);
-  return b;
-});
-
-function setColor(i: number) {
-  myColor = i;
-  swatches.forEach((b, k) => b.setAttribute('aria-pressed', String(k === i)));
+{
+  const saved = Number(load(COLOR_KEY));
+  if (Number.isInteger(saved) && saved >= 0 && saved < PALETTE_HEX.length) ui.sp.color = saved;
 }
-
-try {
-  const saved = Number(localStorage.getItem(COLOR_KEY));
-  if (Number.isInteger(saved) && saved >= 0 && saved < PALETTE_HEX.length) myColor = saved;
-} catch {
-  /* storage unavailable */
-}
-setColor(myColor);
 
 // --- single player: play / pause ---------------------------------------------
 // Playing = fullscreen, hidden cursor. Leaving fullscreen (Esc) or the pause button pauses.
 let playing = false;
 const canFullscreen = !DEBUG && !!document.documentElement.requestFullscreen;
-const spStart = byId('spStart') as HTMLButtonElement;
-
-const result = byId('result');
-const resultTitle = byId('resultTitle');
-const resultScore = byId('resultScore');
 
 /** Game over: freeze play, give the cursor back and show who won. */
 function showResult(winner: number, scores: number[]) {
   const won = winner === 0;
-  resultTitle.textContent = won ? 'YOU WIN' : 'DEFEATED';
-  resultScore.textContent = scores.join('  –  ');
-  byId('resultNames').hidden = true;
-  byId('resultNote').hidden = true;
-  byId('resultWait').hidden = true;
-  byId('again').hidden = false;
-  byId('again').textContent = 'PLAY AGAIN';
-  byId('toMenu').textContent = 'QUIT';
-  result.className = won ? 'win' : 'lose';
-  result.hidden = false;
+  Object.assign(ui.result, {
+    open: true,
+    won,
+    title: won ? 'YOU WIN' : 'DEFEATED',
+    score: scores.join('  –  '),
+    rows: [],
+    note: '',
+    wait: '',
+    showAgain: true,
+    againText: 'PLAY AGAIN',
+    quitText: 'QUIT',
+  });
   setPlaying(false);
-  byId('again').focus({ preventScroll: true });
+  void Alpine.nextTick(() => focusIn('#again'));
 }
 
 view.onGameOver = (w, s) => {
-  if (mode === 'sp') showResult(w, s);
+  if (ui.mode === 'sp') showResult(w, s);
 };
 
 function setPlaying(on: boolean) {
   playing = on;
-  document.body.classList.toggle('playing', on);
+  ui.playing = on;
   input.enabled = on;
   input.mouseActive = on;
   view.running = on;
@@ -442,7 +263,7 @@ function lockPointer() {
 /** Play (or resume) the single player game. Called from a click: fullscreen needs the user gesture. */
 async function start() {
   view.sound.unlock();
-  result.hidden = true;
+  ui.result.open = false;
   if (canFullscreen && !document.fullscreenElement) {
     // Both requests need the click's user activation, so issue them together.
     const fs = document.documentElement.requestFullscreen({ navigationUI: 'hide' });
@@ -458,7 +279,7 @@ async function start() {
 }
 
 function pauseSingle() {
-  if (mode !== 'sp' || !playing) return;
+  if (ui.mode !== 'sp' || !playing) return;
   setPlaying(false);
   show('pause');
 }
@@ -466,8 +287,8 @@ function pauseSingle() {
 /** Single player game thrown away: back to the main menu. */
 function quitSingle() {
   setPlaying(false);
-  result.hidden = true;
-  mode = 'menu';
+  ui.result.open = false;
+  ui.mode = 'menu';
   const url = new URL(location.href);
   url.searchParams.delete('players');
   history.replaceState(null, '', url);
@@ -480,54 +301,30 @@ function restartSingle() {
   void start();
 }
 
-byId('again').addEventListener('click', () => {
-  if (mode === 'sp') restartSingle();
-});
-byId('toMenu').addEventListener('click', () => {
-  if (mode === 'sp') quitSingle();
-});
 addEventListener('keydown', (e) => {
-  if (mode === 'sp' && (e.key === 'r' || e.key === 'R') && playing) {
+  if (ui.mode === 'sp' && (e.key === 'r' || e.key === 'R') && playing) {
     view.restart();
     view.countdown = COUNTDOWN;
   }
 });
 
 document.addEventListener('fullscreenchange', () => {
-  if (mode === 'mp') mp.onFullscreenChange();
+  if (ui.mode === 'mp') mp.onFullscreenChange();
   else if (!document.fullscreenElement) pauseSingle();
 });
 
 addEventListener('keydown', (e) => {
   // Debug: Esc does nothing, so a test run isn't paused by stray keys.
   if (e.key !== 'Escape' || document.fullscreenElement || DEBUG) return;
-  if (mode === 'sp') pauseSingle();
-  else if (mode === 'mp') mp.selfPause();
+  if (ui.mode === 'sp') pauseSingle();
+  else if (ui.mode === 'mp') mp.selfPause();
 });
 
 // Clicking while playing re-grabs the pointer (e.g. after alt-tab).
 document.addEventListener('click', (e) => {
   if ((e.target as HTMLElement).closest('.screen, #result, #banner, #pauseBtn')) return;
-  if (mode === 'sp' && playing) lockPointer();
-  else if (mode === 'mp') mp.grab();
-});
-
-// --- in-game pause button and pause menu ---------------------------------------------
-byId('pauseBtn').addEventListener('click', () => {
-  if (mode === 'sp') pauseSingle();
-  else if (mode === 'mp') mp.selfPause();
-});
-byId('resume').addEventListener('click', () => {
-  if (mode === 'mp') void mp.resumeClick();
-  else if (mode === 'sp') void start();
-});
-byId('restart').addEventListener('click', () => {
-  if (mode === 'sp') restartSingle();
-});
-byId('pauseSettings').addEventListener('click', () => openSettings('pause'));
-byId('quit').addEventListener('click', () => {
-  if (mode === 'mp') mp.exit();
-  else quitSingle();
+  if (ui.mode === 'sp' && playing) lockPointer();
+  else if (ui.mode === 'mp') mp.grab();
 });
 
 // --- multiplayer ---------------------------------------------------------------
@@ -538,13 +335,13 @@ const mp: Multiplayer = new Multiplayer({
     show(s === 'menu' ? 'pause' : s === 'game' ? 'none' : s);
   },
   engage() {
-    document.body.classList.add('playing');
+    ui.playing = true;
     input.enabled = true;
     input.mouseActive = true;
     view.running = true;
   },
   disengage() {
-    document.body.classList.remove('playing');
+    ui.playing = false;
     input.enabled = false;
     input.mouseActive = false;
     input.release();
@@ -559,19 +356,16 @@ const mp: Multiplayer = new Multiplayer({
     return document.documentElement.requestFullscreen({ navigationUI: 'hide' });
   },
   exit() {
-    mode = 'menu';
+    ui.mode = 'menu';
     if (document.fullscreenElement) void document.exitFullscreen();
     show('home');
   },
   countdown,
 });
 
-// --- name, main menu, single player setup, settings ------------------------------
-const nameInput = byId('nameInput') as HTMLInputElement;
-const settingsName = byId('settingsName') as HTMLInputElement;
-
+// --- name, main menu, settings ----------------------------------------------------
 function enterMulti(room: string | null, auto = false) {
-  mode = 'mp';
+  ui.mode = 'mp';
   mp.enter(room, auto);
 }
 
@@ -582,60 +376,14 @@ function afterName() {
   else show('home');
 }
 
-// First visit: ask for a name (saved in localStorage, so later visits skip this).
-byId('nameForm').addEventListener('submit', (e) => {
-  e.preventDefault();
-  const name = setName(nameInput.value);
-  const note = byId('nameNote');
-  if (!name) {
-    note.textContent = 'Pick a name first';
-    note.classList.add('warn');
-    nameInput.focus();
-    return;
-  }
-  nameInput.value = name;
-  afterName();
-});
-
-byId('goSingle').addEventListener('click', () => {
-  mode = 'sp';
-  // This game's own rules again: an online room may have replaced them.
-  setMalletScale(Number(malletInput.value));
-  setWinScore(Number(winInput.value));
-  setPlayers(players); // a fresh game, and the table an online game may have replaced
-  syncPlayersUrl();
-  show('spSetup');
-});
-spStart.addEventListener('click', () => {
-  view.restart();
-  void start();
-});
-byId('spBack').addEventListener('click', () => quitSingle());
-byId('goMulti').addEventListener('click', () => enterMulti(null));
-byId('goSettings').addEventListener('click', () => openSettings('home'));
-
 function openSettings(from: Screen) {
-  settingsFrom = from;
-  settingsName.value = getName() ?? '';
-  byId('settingsNote').textContent = '';
+  ui.settings.from = from;
+  ui.settings.name = getName() ?? '';
+  setNote(ui.settings.note, '');
   show('settings');
 }
 
-byId('settingsBack').addEventListener('click', () => show(settingsFrom));
-byId('settingsNameForm').addEventListener('submit', (e) => {
-  e.preventDefault();
-  const note = byId('settingsNote');
-  const name = setName(settingsName.value);
-  note.classList.toggle('warn', !name);
-  note.textContent = name ? 'Name saved' : 'Pick a name first';
-  if (!name) return;
-  settingsName.value = nameInput.value = name;
-  mp.rename(name);
-});
-
 // --- HUD: FPS (and ping online), then every seat by score -----------------------------
-const hudStats = byId('hudStats');
-const hudScores = byId('hudScores');
 let hudKey = '';
 
 /** Single player: you and the AIs. */
@@ -644,7 +392,7 @@ function spStandings(): Standing[] | null {
   if (!scores) return null;
   return scores.map((score, seat) => ({
     seat,
-    name: seat === 0 ? (getName() ?? 'YOU') : players > 2 ? `AI ${seat}` : 'AI',
+    name: seat === 0 ? (getName() ?? 'YOU') : ui.sp.players > 2 ? `AI ${seat}` : 'AI',
     color: -1,
     score,
     ai: seat > 0,
@@ -653,69 +401,241 @@ function spStandings(): Standing[] | null {
   }));
 }
 
+function standings(): Standing[] {
+  return (ui.mode === 'mp' ? mp.standings() : ui.mode === 'sp' ? spStandings() : null) ?? [];
+}
+
+view.names = new SeatNames((seat) => standings().find((r) => r.seat === seat)?.name ?? '');
+
 function renderHud() {
-  const ping = mode === 'mp' && mp.ping > 0 ? ` · ${Math.round(mp.ping)} ms` : '';
-  hudStats.textContent = `${view.fps} FPS${ping}`;
+  const ping = ui.mode === 'mp' && mp.ping > 0 ? ` · ${Math.round(mp.ping)} ms` : '';
+  ui.hud.stats = `${view.fps} FPS${ping}`;
   renderScores();
 }
 
+/** Each seat's score last shown, to spot a goal (its number pops). */
+const shownScores = new Map<number, number>();
+/** Seats whose score is popping right now. */
+const popping = new Map<number, ReturnType<typeof setTimeout>>();
+const POP_MS = 650; // the pop animation's length (index.html)
+
 function renderScores() {
-  const rows = (mode === 'mp' ? mp.standings() : mode === 'sp' ? spStandings() : null) ?? [];
-  // Highest score on top; ties keep seat order.
-  rows.sort((a, b) => b.score - a.score || a.seat - b.seat);
-  const key = rows.map((r) => `${r.seat}|${r.name}|${r.color}|${r.score}|${r.ai}|${Math.round(r.ping)}`).join(';');
+  const list = standings();
+  if (!list.length) shownScores.clear(); // between games: a new game's first goal still pops
+  const target = view.winScore;
+  const key = `${target};` + list.map((r) => `${r.seat}|${r.name}|${r.color}|${r.score}|${r.ai}|${Math.round(r.ping)}`).join(';');
   if (key === hudKey) return;
   hudKey = key;
-  hudScores.replaceChildren(
-    ...rows.flatMap((r) => {
-      const who = document.createElement('div');
-      who.className = r.me ? 'who me' : 'who';
-      const dot = document.createElement('span');
-      dot.className = 'dot';
-      const hex = r.color >= 0 ? (PALETTE_HEX[r.color] ?? 0xffffff) : seatColor(r.seat).getHex();
-      dot.style.setProperty('--c', `#${hex.toString(16).padStart(6, '0')}`);
-      who.append(dot, r.name);
-      const pts = document.createElement('div');
-      pts.className = 'pts';
-      pts.textContent = String(r.score);
-      const ms = document.createElement('div');
-      ms.className = 'ms';
-      ms.textContent = !r.ai && mode === 'mp' && r.ping > 0 ? `${Math.round(r.ping)} ms` : '';
-      return [who, pts, ms];
-    }),
-  );
+  for (const r of list) {
+    const before = shownScores.get(r.seat);
+    shownScores.set(r.seat, r.score);
+    if (before === undefined || r.score <= before) continue;
+    const old = popping.get(r.seat);
+    if (old) clearTimeout(old);
+    popping.set(
+      r.seat,
+      setTimeout(() => {
+        popping.delete(r.seat);
+        const row = ui.hud.rows.find((x) => x.seat === r.seat);
+        if (row) row.pop = false;
+      }, POP_MS),
+    );
+  }
+  // Highest score first; ties keep seat order. Rows stay in seat order (stable elements), placed by rank.
+  const order = [...list].sort((a, b) => b.score - a.score || a.seat - b.seat);
+  ui.hud.target = target;
+  ui.hud.rows = list.map((r) => ({
+    seat: r.seat,
+    rank: order.indexOf(r) + 1,
+    name: r.name,
+    color: css(r.color >= 0 ? (PALETTE_HEX[r.color] ?? 0xffffff) : seatColor(r.seat).getHex()),
+    score: r.score,
+    progress: Math.min(1, r.score / Math.max(1, target)),
+    ms: !r.ai && ui.mode === 'mp' && r.ping > 0 ? `${Math.round(r.ping)} ms` : '',
+    me: r.me,
+    pop: popping.has(r.seat),
+  }));
 }
 
 view.onFps = renderHud;
 setInterval(renderHud, 500);
 setInterval(renderScores, 150);
 
+// --- what the page's buttons, sliders and forms do (index.html binds to these) ----------
+Alpine.data('app', () => ({
+  ui,
+
+  /** Sliders that change the table: fade the menu while they're dragged (or keyed). */
+  peeking: {
+    '@pointerdown'(e: Event) {
+      peek(true, e.currentTarget);
+    },
+    '@pointerup'() {
+      peek(false);
+    },
+    '@pointercancel'() {
+      peek(false);
+    },
+    '@blur'(e: Event) {
+      // Pressing another slider fires its pointerdown before this one's blur: leave its fade alone.
+      if (e.currentTarget === peekEl) peek(false);
+    },
+    '@keydown'(e: Event) {
+      // Keyboard changes have no release: fade back a moment after the last key.
+      peek(true, e.currentTarget);
+      peekTimer = setTimeout(() => peek(false), 800);
+    },
+  },
+
+  // First visit: ask for a name (saved in localStorage, so later visits skip this).
+  saveName() {
+    const name = setName(ui.nameScreen.name);
+    if (!name) {
+      setNote(ui.nameScreen.note, 'Pick a name first', true);
+      document.getElementById('nameInput')?.focus();
+      return;
+    }
+    ui.nameScreen.name = name;
+    afterName();
+  },
+
+  goSingle() {
+    ui.mode = 'sp';
+    // This game's own rules again: an online room may have replaced them.
+    setMalletScale(ui.sp.malletScale);
+    setWinScore(ui.sp.winScore);
+    setPlayers(ui.sp.players); // a fresh game, and the table an online game may have replaced
+    syncPlayersUrl();
+    show('spSetup');
+  },
+  goMulti() {
+    enterMulti(null);
+  },
+  openSettings,
+
+  // Single player setup.
+  setPlayers(n: number) {
+    setPlayers(parse(n));
+  },
+  pickColor(i: number) {
+    if (i === ui.sp.color) return;
+    ui.sp.color = i;
+    save(COLOR_KEY, i);
+    setPlayers(ui.sp.players); // rebuild so every mallet, light and score takes its new colour
+  },
+  setDifficulty(d: Difficulty) {
+    setDifficulty(d);
+    save(DIFF_KEY, d);
+  },
+  setWinScore(v: string) {
+    save(WIN_KEY, setWinScore(Number(v)));
+  },
+  setMalletScale(v: string) {
+    save(MALLET_KEY, setMalletScale(Number(v)));
+  },
+  spStart() {
+    view.restart();
+    void start();
+  },
+  spBack() {
+    quitSingle();
+  },
+
+  // Settings.
+  settingsBack() {
+    show(ui.settings.from);
+  },
+  saveSettingsName() {
+    const name = setName(ui.settings.name);
+    setNote(ui.settings.note, name ? 'Name saved' : 'Pick a name first', !name);
+    if (!name) return;
+    ui.settings.name = ui.nameScreen.name = name;
+    mp.rename(name);
+  },
+  toggleAudio(kind: 'music' | 'sfx') {
+    const on = !ui.settings[kind];
+    setAudio(kind, on);
+    save(audioKeys[kind], on ? '1' : '0');
+  },
+  toggleHud() {
+    ui.settings.hud = !ui.settings.hud;
+    save(HUD_KEY, ui.settings.hud ? '1' : '0');
+  },
+  setQuality(q: Quality) {
+    setQuality(q);
+    save(QUALITY_KEY, q);
+  },
+  setPitch(v: string) {
+    save(PITCH_KEY, setPitch(Number(v)));
+  },
+  setZoom(v: string) {
+    save(ZOOM_KEY, setZoom(Number(v)));
+  },
+  setSens(v: string) {
+    setSens(Number(v));
+    save(SENS_KEY, input.sensitivity);
+  },
+
+  // In game: pause button, pause menu and result screen.
+  pause() {
+    if (ui.mode === 'sp') pauseSingle();
+    else if (ui.mode === 'mp') mp.selfPause();
+  },
+  resume() {
+    if (ui.mode === 'mp') void mp.resumeClick();
+    else if (ui.mode === 'sp') void start();
+  },
+  restart() {
+    if (ui.mode === 'sp') restartSingle();
+  },
+  again() {
+    if (ui.mode === 'sp') restartSingle();
+    else if (ui.mode === 'mp') mp.again();
+  },
+  /** QUIT / LEAVE / BACK out of the current mode, to the main menu. */
+  quit() {
+    if (ui.mode === 'mp') mp.exit();
+    else quitSingle();
+  },
+
+  // Multiplayer: lobby, room, pause banner.
+  createRoom: () => mp.createRoom(),
+  quickPlay: (size: 2 | 4) => mp.quickPlay(size),
+  joinRoom: (id: string) => mp.joinRoom(id),
+  copyLink: () => mp.copyLink(),
+  roomColor: (i: number) => mp.pickColor(i),
+  roomVisibility: (pub: boolean) => mp.setVisibility(pub),
+  roomWinInput: (v: string) => mp.previewWinScore(Number(v)),
+  roomWinChange: (v: string) => mp.setWinScore(Number(v)),
+  roomMalletInput: (v: string) => mp.previewMalletScale(Number(v)),
+  roomMalletChange: (v: string) => mp.setMalletScale(Number(v)),
+  toggleReady: () => mp.toggleReady(),
+  startGame: () => mp.startGame(),
+  leaveRoom: () => mp.leaveRoom(),
+  kick: (id: string) => mp.kick(id),
+  voteKick: () => mp.voteKick(),
+  joinPause: () => mp.joinPause(),
+}));
+
 input.enabled = false;
-if (DEBUG) Object.assign(window, { airhockey: { view, mp } });
+if (DEBUG) Object.assign(window, { airhockey: { view, mp, ui } });
 setPlayers(parse(new URLSearchParams(location.search).get('players')));
-nameInput.value = getName() ?? '';
+ui.nameScreen.name = getName() ?? '';
+Alpine.start();
 if (getName()) afterName();
 else show('name');
 
 // First run: pick the quality from a short live FPS test. The menu waits for it (no blur, which would skew it).
-let savedQuality: Quality | null = null;
-try {
-  const v = localStorage.getItem(QUALITY_KEY) as Quality | null;
-  if (v && QUALITIES.includes(v)) savedQuality = v;
-} catch {
-  /* storage unavailable: detect every load */
-}
-if (savedQuality) {
+const savedQuality = load(QUALITY_KEY) as Quality | null;
+if (savedQuality && QUALITIES.includes(savedQuality)) {
   setQuality(savedQuality);
 } else {
-  document.body.classList.add('benchmarking');
-  spStart.disabled = true;
-  spStart.textContent = 'DETECTING GRAPHICS…';
+  ui.benchmarking = true;
+  ui.sp.detecting = true;
   void detectQuality().then((q) => {
     setQuality(q);
-    saveQuality(q);
-    document.body.classList.remove('benchmarking');
-    spStart.disabled = false;
-    spStart.textContent = 'START';
+    save(QUALITY_KEY, q);
+    ui.benchmarking = false;
+    ui.sp.detecting = false;
   });
 }

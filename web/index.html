@@ -20,7 +20,7 @@
       }
       .screen[hidden] { display: none; }
       body.benchmarking .screen { backdrop-filter: none; -webkit-backdrop-filter: none; background: rgba(3, 1, 10, 0.9); }
-      /* Dragging the camera angle: see the table through the menu. */
+      /* Dragging a camera or mallet slider: see the table through the menu. */
       .screen { transition: opacity .15s, background .15s; }
       body.peek .screen { opacity: 0.5; background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none; }
       .menu { margin: auto; width: 100%; max-width: 440px; display: flex; flex-direction: column; gap: 16px; }
@@ -94,7 +94,7 @@
 
 
       /* Multiplayer: screens, HUD, banners */
-      [hidden] { display: none !important; }
+      [hidden], [x-cloak] { display: none !important; }
       .swatches.pills button:disabled { opacity: 0.15; cursor: not-allowed; box-shadow: none; }
       .mp-only { display: none !important; }
       body.mp .mp-only { display: block !important; }
@@ -138,19 +138,82 @@
       .roomid .ghost { width: auto; padding: 11px 16px; }
       .slider[aria-disabled="true"] input { opacity: 0.5; }
 
+      /* In-game HUD: scoreboard top left, FPS / ping top right beside the pause button. */
       #hud {
-        position: fixed; z-index: 5; top: max(8px, env(safe-area-inset-top)); left: max(10px, env(safe-area-inset-left)); display: none; pointer-events: none;
-        font: 600 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.06em; color: rgba(190, 255, 255, 0.85); text-shadow: 0 0 6px rgba(0, 229, 255, 0.6);
+        position: fixed; z-index: 5; top: max(10px, env(safe-area-inset-top)); left: max(10px, env(safe-area-inset-left)); display: none; pointer-events: none;
+        font: 600 12px/1 ui-sans-serif, system-ui, sans-serif; letter-spacing: 0.06em; color: #d8d0ff;
       }
       body.playing #hud { display: block; }
+      #hudStats {
+        position: fixed; z-index: 5; display: none; pointer-events: none; align-items: center; box-sizing: border-box; height: 30px; padding: 0 12px;
+        top: calc(max(10px, env(safe-area-inset-top)) + 8px); right: calc(max(10px, env(safe-area-inset-right)) + 56px);
+        font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.08em; color: rgba(190, 255, 255, 0.85); text-shadow: 0 0 6px rgba(0, 229, 255, 0.6);
+        background: rgba(5, 3, 14, 0.7); border: 1px solid rgba(160, 120, 255, 0.35); border-radius: 999px; font-variant-numeric: tabular-nums;
+      }
+      body.playing #hudStats { display: flex; }
       body.nohud #hudStats { display: none; }
-      #hudScores { display: grid; grid-template-columns: auto auto auto; gap: 5px 10px; align-items: center; margin-top: 8px; }
-      #hudScores:empty { display: none; }
-      #hudScores .who { display: flex; align-items: center; gap: 6px; max-width: 34vw; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-      #hudScores .who .dot { width: 9px; height: 9px; }
-      #hudScores .pts { text-align: right; color: #fff; font-variant-numeric: tabular-nums; }
-      #hudScores .ms { color: rgba(190, 255, 255, 0.55); font-variant-numeric: tabular-nums; }
-      #hudScores .me { color: #fff; }
+
+      /* Scoreboard: an angled glass panel. Rows stay in seat order in the DOM and are placed by rank, so a change of
+         order slides them past each other. */
+      #board {
+        --row: 42px; --cut: 14px;
+        position: relative; box-sizing: border-box; width: min(260px, 48vw); padding: 10px 12px 12px;
+        background: linear-gradient(160deg, rgba(16, 9, 38, 0.86), rgba(4, 2, 12, 0.9));
+        backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+        clip-path: polygon(0 0, calc(100% - var(--cut)) 0, 100% var(--cut), 100% 100%, var(--cut) 100%, 0 calc(100% - var(--cut)));
+      }
+      /* Frame (follows the cut corners) and a faint scanline overlay. */
+      #board::before {
+        content: ''; position: absolute; inset: 0; pointer-events: none; padding: 1px;
+        background: linear-gradient(135deg, #00e5ff, rgba(140, 90, 255, 0.5) 40%, rgba(140, 90, 255, 0.15) 70%, #ff2bd6);
+        clip-path: inherit;
+        -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude;
+      }
+      #board::after {
+        content: ''; position: absolute; inset: 0; pointer-events: none;
+        background: repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.025) 0 1px, transparent 1px 3px);
+      }
+      #board .head {
+        display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 0 2px 7px; margin-bottom: 7px;
+        border-bottom: 1px dashed rgba(160, 120, 255, 0.3); font-size: 9px; letter-spacing: 0.22em; color: #7d70a8;
+      }
+      #board .head b { font-weight: 800; color: #bff; text-shadow: 0 0 8px rgba(0, 229, 255, 0.7); }
+      #board .rows { position: relative; }
+      #board .rowx {
+        position: absolute; left: 0; right: 0; top: 0; box-sizing: border-box; height: calc(var(--row) - 6px); padding: 0 10px 0 8px;
+        display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; grid-template-rows: 1fr 3px; column-gap: 8px; align-items: center;
+        border-left: 3px solid var(--c);
+        background: linear-gradient(90deg, color-mix(in srgb, var(--c) 14%, transparent), rgba(255, 255, 255, 0.02) 75%);
+        transition: transform 0.55s cubic-bezier(0.2, 0.9, 0.25, 1.15), background 0.3s, box-shadow 0.4s;
+      }
+      #board .rank { grid-row: 1 / 3; font: 700 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace; color: #7d70a8; text-align: center; }
+      #board .name { display: flex; align-items: center; gap: 6px; min-width: 0; padding-top: 6px; }
+      /* Line box tall enough for scripts that reach above / below Latin (overflow is hidden for the ellipsis). */
+      #board .name span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; line-height: 1.6; padding: 0 2px; }
+      /* Right-to-left names (Persian, Arabic…): letter spacing would pull their joined letters apart. */
+      #board .name span:dir(rtl), #seatNames .seatName:dir(rtl) { letter-spacing: 0; }
+      #board .you { flex: none; font-size: 8px; letter-spacing: 0.16em; padding: 2px 5px; border-radius: 3px; color: #05030a; background: var(--c); box-shadow: 0 0 8px var(--c); }
+      #board .right { display: flex; align-items: baseline; gap: 7px; padding-top: 6px; }
+      #board .ms { font: 600 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace; color: rgba(190, 255, 255, 0.45); font-variant-numeric: tabular-nums; }
+      #board .score {
+        display: inline-block; min-width: 1.4em; text-align: right; font: 800 17px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: #fff; font-variant-numeric: tabular-nums; text-shadow: 0 0 8px color-mix(in srgb, var(--c) 60%, transparent);
+      }
+      #board .score.pop { animation: scorePop 0.65s cubic-bezier(0.2, 1.4, 0.4, 1); }
+      @keyframes scorePop {
+        0% { transform: scale(1.8); color: var(--c); text-shadow: 0 0 10px var(--c), 0 0 24px var(--c); }
+        100% { transform: scale(1); }
+      }
+      #board .bar { grid-column: 2 / 4; align-self: start; height: 3px; border-radius: 2px; background: rgba(255, 255, 255, 0.07); overflow: hidden; }
+      #board .bar i { display: block; height: 100%; background: var(--c); box-shadow: 0 0 6px var(--c); transition: width 0.5s ease-out; }
+      /* You: a brighter row. The leader: glows in its colour, rank lit. */
+      #board .rowx.me { background: linear-gradient(90deg, color-mix(in srgb, var(--c) 30%, transparent), rgba(255, 255, 255, 0.05) 80%); color: #fff; }
+      #board .rowx.lead { box-shadow: 0 0 14px color-mix(in srgb, var(--c) 45%, transparent), inset 0 0 12px color-mix(in srgb, var(--c) 22%, transparent); }
+      #board .rowx.lead .rank { color: var(--c); text-shadow: 0 0 8px var(--c); }
+      @media (prefers-reduced-motion: reduce) {
+        #board .rowx, #board .bar i { transition: none; }
+        #board .score.pop { animation: none; }
+      }
       #pauseBtn {
         all: unset; box-sizing: border-box; position: fixed; z-index: 7; display: none; align-items: center; justify-content: center; gap: 6px;
         top: max(10px, env(safe-area-inset-top)); right: max(10px, env(safe-area-inset-right)); width: 46px; height: 46px; border-radius: 50%;
@@ -193,6 +256,16 @@
         #countdown .out, #countdown .go.out { animation: cdFade 0.2s ease-in reverse forwards; }
         @keyframes cdFade { from { opacity: 0; } to { opacity: 1; } }
       }
+      /* Players' names over their mallets during the countdown cinematic (placed each frame by SeatNames). */
+      #seatNames { position: fixed; inset: 0; z-index: 5; pointer-events: none; overflow: hidden; }
+      #seatNames .seatName {
+        position: absolute; left: 0; top: 0; max-width: 40vw; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+        padding: 1px 12px; border-radius: 999px; background: rgba(10, 6, 24, 0.7); border: 1px solid var(--c);
+        font: 800 clamp(12px, 2.4vw, 18px)/1.6 ui-sans-serif, system-ui, sans-serif; letter-spacing: 0.12em; text-transform: uppercase;
+        color: #fff; text-shadow: 0 0 10px var(--c); box-shadow: 0 0 12px color-mix(in srgb, var(--c) 45%, transparent);
+        opacity: 0; transition: opacity 0.25s ease-out;
+      }
+      #seatNames .seatName.on { opacity: 1; }
       #countdown[hidden], #banner[hidden], #hint[hidden], #toast[hidden] { display: none; }
       #banner {
         position: fixed; inset: 0; z-index: 15; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
@@ -222,199 +295,290 @@
       }
     </style>
   </head>
-  <body>
+  <body
+    x-data="app"
+    :class="{ playing: ui.playing, mp: ui.mode === 'mp', peek: ui.peek, benchmarking: ui.benchmarking, waiting: ui.waiting, nohud: !ui.settings.hud }"
+  >
     <canvas id="view"></canvas>
-    <div id="hud"><div id="hudStats"></div><div id="hudScores"></div></div>
-    <button id="pauseBtn" type="button" aria-label="Pause"></button>
-    <div id="countdown" hidden></div>
-    <div id="banner" hidden>
-      <div id="bannerText"></div>
-      <div class="btns">
-        <button id="voteBtn" class="ghost" type="button" hidden></button>
-        <button id="joinPause" class="ghost" type="button">PAUSE TOO</button>
+    <div id="hud">
+      <div id="board" x-show="ui.hud.rows.length">
+        <div class="head"><b>SCOREBOARD</b><span x-text="`FIRST TO ${ui.hud.target}`"></span></div>
+        <div class="rows" :style="`height: calc(var(--row) * ${ui.hud.rows.length} - 6px)`">
+          <template x-for="r in ui.hud.rows" :key="r.seat">
+            <div
+              class="rowx"
+              :class="{ me: r.me, lead: r.rank === 1 && r.score > 0 }"
+              :style="`--c: ${r.color}; transform: translateY(calc(var(--row) * ${r.rank - 1}))`"
+            >
+              <div class="rank" x-text="r.rank"></div>
+              <div class="name"><span dir="auto" x-text="r.name"></span><b class="you" x-show="r.me">YOU</b></div>
+              <div class="right"><span class="ms" x-text="r.ms"></span><b class="score" :class="{ pop: r.pop }" x-text="r.score"></b></div>
+              <div class="bar"><i :style="`width: ${r.progress * 100}%`"></i></div>
+            </div>
+          </template>
+        </div>
       </div>
     </div>
-    <div id="hint" hidden>CLICK TO ENTER FULLSCREEN</div>
-    <div id="toast" hidden></div>
-    <section id="nameScreen" class="screen">
-      <form id="nameForm" class="menu">
+    <div id="hudStats" x-text="ui.hud.stats"></div>
+    <button id="pauseBtn" type="button" aria-label="Pause" @click="pause()"></button>
+    <div id="seatNames">
+      <template x-for="n in ui.seatNames" :key="n.seat">
+        <div
+          class="seatName"
+          dir="auto"
+          :class="{ on: n.on }"
+          :style="`--c: ${n.color}; transform: translate(${n.x}px, ${n.y}px) translate(-50%, -100%)`"
+          x-text="n.name"
+        ></div>
+      </template>
+    </div>
+    <div id="countdown" hidden></div>
+    <div id="banner" x-show="ui.banner.open" x-cloak>
+      <div x-text="ui.banner.text"></div>
+      <div class="btns">
+        <button class="ghost" type="button" x-show="ui.banner.vote.show" :disabled="ui.banner.vote.disabled" x-text="ui.banner.vote.text" @click="voteKick()"></button>
+        <button class="ghost" type="button" @click="joinPause()">PAUSE TOO</button>
+      </div>
+    </div>
+    <div id="hint" x-show="ui.hint" x-cloak>CLICK TO ENTER FULLSCREEN</div>
+    <div id="toast" x-show="ui.toast" x-text="ui.toast" x-cloak></div>
+
+    <section class="screen" data-screen="name" x-show="ui.screen === 'name'" x-cloak>
+      <form class="menu" @submit.prevent="saveName()">
         <h1 class="title">CYBER HOCKEY</h1>
         <div class="group">
           <label class="cap" for="nameInput">YOUR NAME</label>
-          <input id="nameInput" type="text" maxlength="16" autocomplete="nickname" spellcheck="false" placeholder="Enter a name" />
+          <input id="nameInput" type="text" maxlength="16" autocomplete="nickname" spellcheck="false" placeholder="Enter a name" x-model="ui.nameScreen.name" />
         </div>
-        <div id="nameNote" class="note"></div>
-        <button id="saveName" class="primary" type="submit">SAVE</button>
+        <div class="note" :class="{ warn: ui.nameScreen.note.warn }" x-text="ui.nameScreen.note.text"></div>
+        <button class="primary" type="submit">SAVE</button>
       </form>
     </section>
-    <section id="home" class="screen" hidden>
+
+    <section class="screen" data-screen="home" x-show="ui.screen === 'home'" x-cloak>
       <div class="menu">
         <h1 class="title">CYBER HOCKEY</h1>
-        <button id="goSingle" class="primary" type="button">SINGLE PLAYER</button>
-        <button id="goMulti" class="primary" type="button">MULTI PLAYER</button>
-        <button id="goSettings" class="ghost" type="button">SETTINGS</button>
+        <button class="primary" type="button" @click="goSingle()">SINGLE PLAYER</button>
+        <button class="primary" type="button" @click="goMulti()">MULTI PLAYER</button>
+        <button class="ghost" type="button" @click="openSettings('home')">SETTINGS</button>
       </div>
     </section>
-    <section id="spSetup" class="screen" hidden>
+
+    <section class="screen" data-screen="spSetup" x-show="ui.screen === 'spSetup'" x-cloak>
       <div class="menu">
         <h1 class="title">SINGLE PLAYER</h1>
         <div class="group">
           <div class="cap">PLAYERS</div>
-          <div id="modes" class="pills" role="group" aria-label="Player count">
-            <button data-n="2" aria-pressed="false">2P</button>
-            <button data-n="3" aria-pressed="false">3P</button>
-            <button data-n="4" aria-pressed="false">4P</button>
+          <div class="pills" role="group" aria-label="Player count">
+            <template x-for="n in [2, 3, 4]" :key="n">
+              <button type="button" :aria-pressed="String(ui.sp.players === n)" @click="setPlayers(n)" x-text="`${n}P`"></button>
+            </template>
           </div>
         </div>
         <div class="group">
           <div class="cap">YOUR COLOR</div>
-          <div id="colors" class="pills swatches" role="group" aria-label="Your colour"></div>
+          <div id="colors" class="pills swatches" role="group" aria-label="Your colour">
+            <template x-for="(c, i) in ui.palette" :key="i">
+              <button type="button" :style="`--c: ${c}`" :aria-label="`Colour ${i + 1}`" :aria-pressed="String(ui.sp.color === i)" @click="pickColor(i)"></button>
+            </template>
+          </div>
         </div>
         <div class="group">
           <div class="cap">DIFFICULTY</div>
-          <div id="difficulty" class="pills" role="group" aria-label="Difficulty">
-            <button data-d="easy" aria-pressed="false">EASY</button>
-            <button data-d="medium" aria-pressed="false">MEDIUM</button>
-            <button data-d="hard" aria-pressed="false">HARD</button>
-            <button data-d="expert" aria-pressed="false">EXPERT</button>
+          <div class="pills" role="group" aria-label="Difficulty">
+            <template x-for="d in ['easy', 'medium', 'hard', 'expert']" :key="d">
+              <button type="button" :aria-pressed="String(ui.sp.difficulty === d)" @click="setDifficulty(d)" x-text="d.toUpperCase()"></button>
+            </template>
           </div>
         </div>
         <label class="slider cap">POINTS TO WIN
-          <output id="winOut">10</output>
-          <input id="winInput" type="range" min="10" max="100" step="1" value="10" />
+          <output x-text="ui.sp.winScore"></output>
+          <input type="range" min="10" max="100" step="1" :value="ui.sp.winScore" @input="setWinScore($event.target.value)" />
         </label>
         <label class="slider cap">MALLET SIZE
-          <output id="malletOut">100%</output>
-          <input id="malletInput" type="range" min="0.6" max="1.6" step="0.05" value="1" />
+          <output x-text="`${Math.round(ui.sp.malletScale * 100)}%`"></output>
+          <input type="range" min="0.6" max="1.6" step="0.05" :value="ui.sp.malletScale" @input="setMalletScale($event.target.value)" x-bind="peeking" />
         </label>
-        <button id="spStart" class="primary" type="button">START</button>
-        <button id="spBack" class="ghost" type="button">BACK</button>
+        <button class="primary" type="button" :disabled="ui.sp.detecting" x-text="ui.sp.detecting ? 'DETECTING GRAPHICS…' : 'START'" @click="spStart()"></button>
+        <button class="ghost" type="button" @click="spBack()">BACK</button>
       </div>
     </section>
-    <section id="settings" class="screen" hidden>
+
+    <section class="screen" data-screen="settings" x-show="ui.screen === 'settings'" x-cloak>
       <div class="menu">
         <h1 class="title">SETTINGS</h1>
         <div class="group">
           <label class="cap" for="settingsName">YOUR NAME</label>
-          <form id="settingsNameForm" class="inline">
-            <input id="settingsName" type="text" maxlength="16" autocomplete="nickname" spellcheck="false" />
-            <button id="settingsSave" class="ghost" type="submit">SAVE</button>
+          <form class="inline" @submit.prevent="saveSettingsName()">
+            <input id="settingsName" type="text" maxlength="16" autocomplete="nickname" spellcheck="false" x-model="ui.settings.name" />
+            <button class="ghost" type="submit">SAVE</button>
           </form>
         </div>
-        <div id="settingsNote" class="note"></div>
+        <div class="note" :class="{ warn: ui.settings.note.warn }" x-text="ui.settings.note.text"></div>
         <div class="group">
           <div class="cap">AUDIO</div>
-          <div id="audio" class="pills" role="group" aria-label="Audio">
-            <button data-k="music" aria-pressed="true">MUSIC ON</button>
-            <button data-k="sfx" aria-pressed="true">SOUND FX ON</button>
+          <div class="pills" role="group" aria-label="Audio">
+            <button type="button" :aria-pressed="String(ui.settings.music)" @click="toggleAudio('music')" x-text="`MUSIC ${ui.settings.music ? 'ON' : 'OFF'}`"></button>
+            <button type="button" :aria-pressed="String(ui.settings.sfx)" @click="toggleAudio('sfx')" x-text="`SOUND FX ${ui.settings.sfx ? 'ON' : 'OFF'}`"></button>
           </div>
         </div>
         <div class="group">
           <div class="cap">DISPLAY</div>
           <div class="pills">
-            <button id="hudToggle" aria-pressed="true">SHOW FPS / PING ON</button>
+            <button type="button" :aria-pressed="String(ui.settings.hud)" @click="toggleHud()" x-text="`SHOW FPS / PING ${ui.settings.hud ? 'ON' : 'OFF'}`"></button>
           </div>
         </div>
         <div class="group">
           <label class="cap" for="quality">GRAPHICS QUALITY</label>
-          <select id="quality">
+          <select id="quality" :value="ui.settings.quality" @change="setQuality($event.target.value)">
             <option value="low">Low</option>
             <option value="medium">Medium</option>
             <option value="high">High</option>
           </select>
         </div>
         <label class="slider cap">CAMERA ANGLE
-          <output id="pitchOut">50°</output>
-          <input id="pitchInput" type="range" min="15" max="89" step="1" value="50" />
+          <output x-text="`${Math.round(ui.settings.pitch)}°`"></output>
+          <input type="range" min="15" max="89" step="1" :value="ui.settings.pitch" @input="setPitch($event.target.value)" x-bind="peeking" />
+        </label>
+        <label class="slider cap">CAMERA ZOOM
+          <output x-text="`${Math.round(ui.settings.zoom)}%`"></output>
+          <input type="range" min="60" max="160" step="5" :value="ui.settings.zoom" @input="setZoom($event.target.value)" x-bind="peeking" />
         </label>
         <label class="slider cap">SENSITIVITY
-          <output id="sensOut">1.0</output>
-          <input id="sensInput" type="range" min="0.25" max="5" step="0.05" value="1" />
+          <output x-text="ui.settings.sens.toFixed(2)"></output>
+          <input type="range" min="0.25" max="5" step="0.05" :value="ui.settings.sens" @input="setSens($event.target.value)" />
         </label>
-        <button id="settingsBack" class="primary" type="button">BACK</button>
+        <button class="primary" type="button" @click="settingsBack()">BACK</button>
       </div>
     </section>
-    <section id="lobby" class="screen" hidden>
+
+    <section class="screen" data-screen="lobby" x-show="ui.screen === 'lobby'" x-cloak>
       <div class="menu">
         <h1 class="title">MULTI PLAYER</h1>
         <div class="group">
           <div class="cap">PUBLIC ROOMS</div>
-          <div id="roomList" class="list"></div>
+          <div class="list">
+            <div class="empty" x-show="!ui.lobby.rooms.length">No public rooms yet. Create one!</div>
+            <template x-for="r in ui.lobby.rooms" :key="r.id">
+              <div class="row">
+                <div class="grow"><span x-text="r.host"></span><div class="dim" x-text="r.sub"></div></div>
+                <span class="dim" x-text="r.count"></span>
+                <button type="button" :disabled="r.full" @click="joinRoom(r.id)">JOIN</button>
+              </div>
+            </template>
+          </div>
         </div>
         <div class="group">
           <div class="cap">CREATE ROOM</div>
-          <div id="createVis" class="pills" role="group" aria-label="Visibility">
-            <button data-v="public" aria-pressed="true">PUBLIC</button>
-            <button data-v="private" aria-pressed="false">PRIVATE</button>
+          <div class="pills" role="group" aria-label="Visibility">
+            <button type="button" :aria-pressed="String(ui.lobby.createPublic)" @click="ui.lobby.createPublic = true">PUBLIC</button>
+            <button type="button" :aria-pressed="String(!ui.lobby.createPublic)" @click="ui.lobby.createPublic = false">PRIVATE</button>
           </div>
-          <button id="createRoom" class="primary" type="button">CREATE ROOM</button>
+          <button class="primary" type="button" @click="createRoom()">CREATE ROOM</button>
         </div>
         <div class="group">
           <div class="cap">QUICK PLAY</div>
           <div class="inline">
-            <button id="quick2" class="primary" type="button">2 PLAYERS</button>
-            <button id="quick4" class="primary" type="button">4 PLAYERS</button>
+            <button class="primary" type="button" @click="quickPlay(2)">2 PLAYERS</button>
+            <button class="primary" type="button" @click="quickPlay(4)">4 PLAYERS</button>
           </div>
         </div>
-        <div id="lobbyNote" class="note"></div>
-        <button id="lobbyBack" class="ghost" type="button">BACK</button>
+        <div class="note" :class="{ warn: ui.lobby.note.warn }" x-text="ui.lobby.note.text"></div>
+        <button class="ghost" type="button" @click="quit()">BACK</button>
       </div>
     </section>
-    <section id="room" class="screen" hidden>
+
+    <section class="screen" data-screen="room" x-show="ui.screen === 'room'" x-cloak>
       <div class="menu">
         <div class="group">
           <div class="cap">ROOM</div>
-          <div class="roomid"><code id="roomId"></code><button id="copyLink" class="ghost" type="button">COPY LINK</button></div>
+          <div class="roomid"><code x-text="ui.room.id"></code><button class="ghost" type="button" x-text="ui.room.copyText" @click="copyLink()"></button></div>
         </div>
-        <div id="roomStatus" class="note"></div>
+        <div class="note" :class="{ warn: ui.room.status.warn }" x-text="ui.room.status.text"></div>
         <div class="group">
           <div class="cap">PLAYERS</div>
-          <div id="members" class="list"></div>
-        </div>
-        <div id="roomColorsBox" class="group">
-          <div class="cap">YOUR COLOR</div>
-          <div id="roomSwatches" class="pills swatches" role="group" aria-label="Your colour"></div>
-        </div>
-        <div id="roomVisBox" class="group">
-          <div class="cap">VISIBILITY</div>
-          <div id="roomVis" class="pills" role="group" aria-label="Visibility">
-            <button data-v="public" aria-pressed="false">PUBLIC</button>
-            <button data-v="private" aria-pressed="false">PRIVATE</button>
+          <div class="list">
+            <template x-for="m in ui.room.members" :key="m.id">
+              <div class="row">
+                <span class="dot" :style="`--c: ${m.color}`"></span>
+                <span class="grow" x-text="m.name"></span>
+                <span class="badge you" x-show="m.you">YOU</span>
+                <span class="badge off" x-show="m.offline">OFFLINE</span>
+                <span class="badge ready" x-show="m.ready">READY</span>
+                <button type="button" x-show="m.kickable" @click="kick(m.id)">KICK</button>
+              </div>
+            </template>
           </div>
         </div>
-        <label class="slider cap" id="roomWinBox">POINTS TO WIN
-          <output id="roomWinOut">10</output>
-          <input id="roomWin" type="range" min="10" max="100" step="1" value="10" />
+        <div class="group" x-show="ui.room.showColors">
+          <div class="cap">YOUR COLOR</div>
+          <div class="pills swatches" role="group" aria-label="Your colour">
+            <template x-for="(c, i) in ui.palette" :key="i">
+              <button
+                type="button"
+                :style="`--c: ${c}`"
+                :aria-label="`Colour ${i + 1}`"
+                :aria-pressed="String(ui.room.myColor === i)"
+                :disabled="ui.room.colorsLocked || ui.room.taken.includes(i)"
+                @click="roomColor(i)"
+              ></button>
+            </template>
+          </div>
+        </div>
+        <div class="group" x-show="ui.room.showVis">
+          <div class="cap">VISIBILITY</div>
+          <div class="pills" role="group" aria-label="Visibility">
+            <button type="button" :aria-pressed="String(ui.room.isPublic)" :disabled="!ui.room.canEdit" @click="roomVisibility(true)">PUBLIC</button>
+            <button type="button" :aria-pressed="String(!ui.room.isPublic)" :disabled="!ui.room.canEdit" @click="roomVisibility(false)">PRIVATE</button>
+          </div>
+        </div>
+        <label class="slider cap" :aria-disabled="String(!ui.room.canEdit)">POINTS TO WIN
+          <output x-text="ui.room.winScore"></output>
+          <input
+            type="range" min="10" max="100" step="1"
+            :value="ui.room.winScore" :disabled="!ui.room.canEdit"
+            @input="roomWinInput($event.target.value)" @change="roomWinChange($event.target.value)"
+          />
         </label>
-        <label class="slider cap" id="roomMalletBox">MALLET SIZE
-          <output id="roomMalletOut">100%</output>
-          <input id="roomMallet" type="range" min="0.6" max="1.6" step="0.05" value="1" />
+        <label class="slider cap" :aria-disabled="String(!ui.room.canEdit)">MALLET SIZE
+          <output x-text="`${Math.round(ui.room.malletScale * 100)}%`"></output>
+          <input
+            type="range" min="0.6" max="1.6" step="0.05"
+            :value="ui.room.malletScale" :disabled="!ui.room.canEdit"
+            @input="roomMalletInput($event.target.value)" @change="roomMalletChange($event.target.value)" x-bind="peeking"
+          />
         </label>
-        <div id="roomNote" class="note"></div>
-        <button id="readyBtn" class="primary" type="button">READY</button>
-        <button id="startBtn" class="primary" type="button">START</button>
-        <button id="leaveRoom" class="ghost" type="button">LEAVE</button>
+        <div class="note" :class="{ warn: ui.room.note.warn }" x-text="ui.room.note.text"></div>
+        <button class="primary" type="button" x-show="ui.room.showReady" x-text="ui.room.readyText" @click="toggleReady()"></button>
+        <button class="primary" type="button" x-show="ui.room.showStart" :disabled="ui.room.startBlocked" @click="startGame()">START</button>
+        <button class="ghost" type="button" @click="leaveRoom()">LEAVE</button>
       </div>
     </section>
-    <div id="result" hidden>
-      <h1 id="resultTitle">YOU WIN</h1>
-      <div id="resultScore" class="final"></div>
-      <div id="resultNames" class="names" hidden></div>
-      <div id="resultNote" class="sub" hidden></div>
+
+    <div id="result" x-show="ui.result.open" :class="ui.result.won ? 'win' : 'lose'" x-cloak>
+      <h1 x-text="ui.result.title"></h1>
+      <div class="final" x-show="ui.result.score" x-text="ui.result.score"></div>
+      <div class="names" x-show="ui.result.rows.length">
+        <template x-for="(r, i) in ui.result.rows" :key="i">
+          <div class="row"><span class="dot" :style="`--c: ${r.color}`"></span><span class="grow" x-text="r.name"></span><b x-text="r.score"></b></div>
+        </template>
+      </div>
+      <div class="sub" x-show="ui.result.note" x-text="ui.result.note"></div>
       <div class="btns">
-        <div id="resultWait" class="note" hidden></div>
-        <button id="again" type="button">PLAY AGAIN</button>
-        <button id="toMenu" class="ghost" type="button">QUIT</button>
+        <div class="note" x-show="ui.result.wait" x-text="ui.result.wait"></div>
+        <button id="again" type="button" x-show="ui.result.showAgain" x-text="ui.result.againText" @click="again()"></button>
+        <button id="toMenu" class="ghost" type="button" x-text="ui.result.quitText" @click="quit()"></button>
       </div>
     </div>
-    <section id="pause" class="screen" hidden>
+
+    <section class="screen" data-screen="pause" x-show="ui.screen === 'pause'" x-cloak>
       <div class="menu">
         <h1 class="title">PAUSED</h1>
-        <div id="pauseLeft" class="note mp-only"></div>
-        <button id="resume" class="primary" type="button">RESUME</button>
-        <button id="restart" class="ghost sp-only" type="button">RESTART</button>
-        <button id="pauseSettings" class="ghost" type="button">SETTINGS</button>
-        <button id="quit" class="ghost" type="button">QUIT</button>
+        <div class="note mp-only" x-text="ui.pauseLeft"></div>
+        <button class="primary" type="button" @click="resume()">RESUME</button>
+        <button class="ghost sp-only" type="button" @click="restart()">RESTART</button>
+        <button class="ghost" type="button" @click="openSettings('pause')">SETTINGS</button>
+        <button class="ghost" type="button" @click="quit()">QUIT</button>
       </div>
     </section>
     <script type="module" src="/src/main.ts"></script>
