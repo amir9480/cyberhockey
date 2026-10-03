@@ -467,3 +467,43 @@ describe('host and grace', () => {
     expect((await a2.room()).settings.winScore).toBe(10);
   });
 });
+
+describe('limits', () => {
+  it('lets a player be in one game at a time across tabs', async () => {
+    const a = await connect('A');
+    a.send({ t: 'create', public: false });
+    const room = await a.nextType('room');
+    const a2 = await connect('A', a.token);
+    for (const msg of [{ t: 'create' }, { t: 'quick', size: 2 }, { t: 'p2pCreate' }, { t: 'p2pQuick', size: 2 }]) {
+      a2.send(msg);
+      expect((await a2.nextType('error')).code).toBe('busy');
+    }
+    // Once the first tab leaves, the second is free.
+    a.send({ t: 'leave' });
+    await a.nextType('left');
+    a2.send({ t: 'create' });
+    expect((await a2.room()).id).not.toBe(room.id);
+  });
+
+  it('refuses connections over the per-address limit', async () => {
+    const limited = await startServer({ maxConnsPerIp: 2 });
+    const open = [await new TestClient(limited.port).open(), await new TestClient(limited.port).open()];
+    await expect(new TestClient(limited.port).open()).rejects.toThrow(/429/);
+    // A closed connection frees its place.
+    open[0].ws.close();
+    await new Promise((res) => open[0].ws.once('close', res));
+    await sleep(20);
+    open.push(await new TestClient(limited.port).open());
+    for (const c of open) c.ws.terminate();
+    await limited.server.close();
+  });
+
+  it('drops a flood of commands', async () => {
+    const a = await connect('A');
+    for (let i = 0; i < 300; i++) a.send({ t: 'ping', c: i });
+    await sleep(200);
+    const pongs = a.history.filter((m) => m.t === 'pong').length;
+    expect(pongs).toBeGreaterThanOrEqual(100);
+    expect(pongs).toBeLessThan(200);
+  });
+});

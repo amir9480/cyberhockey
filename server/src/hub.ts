@@ -14,15 +14,25 @@ export class Hub implements RoomOwner {
   /** JSON of each listed room's summary, to tell whether anything actually changed. */
   private summaries = new Map<string, string>();
   private listJson = '{"t":"lobby","rooms":[],"p2p":[]}';
+  /** Open connections per player: one browser, several tabs. */
+  private byPlayer = new Map<string, Set<Client>>();
 
   constructor(private cfg: ServerConfig) {}
 
   connected(client: Client) {
+    let tabs = this.byPlayer.get(client.id);
+    if (!tabs) this.byPlayer.set(client.id, (tabs = new Set()));
+    tabs.add(client);
     this.p2p.connected(client);
   }
 
   handle(client: Client, msg: ClientMsg) {
-    if (handleConnMsg(client, msg) || this.p2p.handle(client, msg)) return;
+    if (handleConnMsg(client, msg)) return;
+    const target = this.entering(msg);
+    if (target !== undefined && this.inOtherGame(client, target)) {
+      return client.error('busy', 'You are already in a game in another tab');
+    }
+    if (this.p2p.handle(client, msg)) return;
     switch (msg.t) {
       case 'lobby':
         client.lobby = true;
@@ -84,9 +94,47 @@ export class Hub implements RoomOwner {
   }
 
   disconnect(client: Client) {
+    const tabs = this.byPlayer.get(client.id);
+    tabs?.delete(client);
+    if (tabs?.size === 0) this.byPlayer.delete(client.id);
     this.lobbySubs.delete(client);
     this.p2p.disconnected(client);
     client.room?.drop(client);
+  }
+
+  /**
+   * The game `msg` would put its sender in: a server room (`s:<id>`), a P2P room (`p:<id>`), null for a new one, or
+   * undefined when it doesn't enter a game at all.
+   */
+  private entering(msg: ClientMsg): string | null | undefined {
+    switch (msg.t) {
+      case 'create':
+      case 'quick':
+      case 'p2pCreate':
+      case 'p2pQuick':
+        return null;
+      case 'join':
+        return typeof msg.room === 'string' && this.rooms.has(msg.room) ? `s:${msg.room}` : null;
+      case 'p2pFind':
+        return typeof msg.room === 'string' && this.p2p.has(msg.room) ? `p:${msg.room}` : null;
+      default:
+        return undefined;
+    }
+  }
+
+  /**
+   * Another tab of this player is in a game other than `target`: a player plays one game at a time. The same game is
+   * fine (the new tab takes the seat over). P2P rooms count only where this player hosts: the server doesn't see who
+   * joins them.
+   */
+  private inOtherGame(client: Client, target: string | null) {
+    for (const tab of this.byPlayer.get(client.id) ?? []) {
+      if (tab === client) continue;
+      const hosted = this.p2p.hostedBy(tab);
+      const at = tab.room ? `s:${tab.room.id}` : hosted ? `p:${hosted}` : null;
+      if (at && at !== target) return true;
+    }
+    return false;
   }
 
   private leaveCurrent(client: Client) {
@@ -132,5 +180,6 @@ export class Hub implements RoomOwner {
   close() {
     for (const r of [...this.rooms.values()]) r.close();
     this.lobbySubs.clear();
+    this.byPlayer.clear();
   }
 }

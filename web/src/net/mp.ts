@@ -149,7 +149,7 @@ export class Multiplayer {
       if (!this.open) return;
       // A P2P room doesn't need the server once everyone is connected.
       if (this.mode.kind === 'p2p' && this.room) return;
-      const msg = 'Connection lost, reconnecting…';
+      const msg = socket.idle ? 'Disconnected for inactivity. Click anywhere to reconnect.' : 'Connection lost, reconnecting…';
       if (this.active) this.toast(msg);
       else setNote(ui.lobby.note, msg, true);
     };
@@ -473,7 +473,7 @@ export class Multiplayer {
   }
 
   private onError(code: string, msg: string) {
-    if ((code === 'not_found' || code === 'full' || code === 'kicked') && !this.room) {
+    if ((code === 'not_found' || code === 'full' || code === 'kicked' || code === 'busy') && !this.room) {
       this.wantedRoom = null;
       this.setUrl(null);
       if (this.autoJoin) {

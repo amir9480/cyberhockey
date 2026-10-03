@@ -1,4 +1,4 @@
-import type { ServerMsg } from '@airhockey/shared/protocol';
+import { CLOSE_IDLE, type ServerMsg } from '@airhockey/shared/protocol';
 import { adoptToken, getName, getToken } from './identity';
 import { BaseTransport } from './transport';
 
@@ -16,6 +16,8 @@ function lagger() {
 const lagOut = lagger();
 const lagIn = lagger();
 const BACKOFF = [300, 600, 1200, 2500, 5000];
+/** What counts as the player being back after an idle disconnect. */
+const WAKE_EVENTS = ['pointerdown', 'keydown', 'visibilitychange'] as const;
 
 /** The server run this page came from (stamped in by the server; absent under the Vite dev server). */
 const PAGE_BUILD = document.querySelector<HTMLMetaElement>('meta[name="build"]')?.content;
@@ -42,6 +44,8 @@ export class Socket extends BaseTransport {
   private wanted = false;
   private tries = 0;
   private retry: ReturnType<typeof setTimeout> | null = null;
+  /** The server closed the connection because nobody used it: it reopens when the player does something. */
+  idle = false;
 
   connect() {
     this.wanted = true;
@@ -50,6 +54,7 @@ export class Socket extends BaseTransport {
 
   close() {
     this.wanted = false;
+    this.unidle();
     if (this.retry) clearTimeout(this.retry);
     this.retry = null;
     this.stopPing();
@@ -84,12 +89,27 @@ export class Socket extends BaseTransport {
     this.ws = ws;
     ws.binaryType = 'arraybuffer';
     ws.onmessage = (e) => lagIn(() => this.receive(e.data as string | ArrayBuffer));
-    ws.onclose = () => {
+    ws.onclose = (e) => {
       if (this.ws !== ws) return;
       this.ws = null;
+      if (e.code === CLOSE_IDLE && this.wanted) {
+        this.idle = true;
+        for (const ev of WAKE_EVENTS) document.addEventListener(ev, this.wake, true);
+      }
       this.lost();
-      if (this.wanted) this.retry = setTimeout(() => this.open(), BACKOFF[Math.min(this.tries++, BACKOFF.length - 1)]);
+      if (this.wanted && !this.idle) this.retry = setTimeout(() => this.open(), BACKOFF[Math.min(this.tries++, BACKOFF.length - 1)]);
     };
     ws.onerror = () => {};
+  }
+
+  private wake = () => {
+    if (document.visibilityState !== 'visible') return;
+    this.unidle();
+    if (this.wanted) this.open();
+  };
+
+  private unidle() {
+    this.idle = false;
+    for (const ev of WAKE_EVENTS) document.removeEventListener(ev, this.wake, true);
   }
 }

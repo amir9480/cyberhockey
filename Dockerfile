@@ -8,6 +8,8 @@ FROM base AS build
 COPY package.json pnpm-lock.yaml ./
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile
 COPY . .
+# Public site URL: baked into index.html's canonical/OG/Twitter tags, and the origin allowed to open the game socket.
+ARG APP_URL
 RUN pnpm build
 
 FROM base AS prod-deps
@@ -15,7 +17,8 @@ COPY package.json pnpm-lock.yaml ./
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile --prod
 
 FROM node:22-alpine
-ENV NODE_ENV=production PORT=3000
+ARG APP_URL
+ENV NODE_ENV=production PORT=3000 APP_URL=${APP_URL}
 WORKDIR /app
 COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=build /app/server/dist ./server/dist

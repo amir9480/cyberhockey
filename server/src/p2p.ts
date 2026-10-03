@@ -79,6 +79,7 @@ export class P2pRegistry {
         if (!info) return true;
         const r = this.rooms.get(info.id);
         if (r && r.host !== c) return true; // someone else's
+        this.unhostOthers(c, info.id);
         this.rooms.set(info.id, { info, host: c });
         this.onListChange();
         return true;
@@ -118,6 +119,21 @@ export class P2pRegistry {
     return out.sort((a, b) => Number(a.status === 'playing') - Number(b.status === 'playing'));
   }
 
+  has(id: string) {
+    return this.rooms.has(id);
+  }
+
+  /** The room `c` hosts, if any. */
+  hostedBy(c: Client): string | null {
+    for (const [id, r] of this.rooms) if (r.host === c) return id;
+    return null;
+  }
+
+  /** A connection hosts one room at a time: any other it held is gone (it can't be running two). */
+  private unhostOthers(c: Client, keep: string) {
+    for (const [id, r] of this.rooms) if (r.host === c && id !== keep) this.rooms.delete(id);
+  }
+
   private isHost(c: Client) {
     for (const r of this.rooms.values()) if (r.host === c) return true;
     return false;
@@ -125,6 +141,7 @@ export class P2pRegistry {
 
   /** Tell `c` to host a new room, holding its place until the host's first report fills it in. */
   private hostNew(c: Client, id: string, opts: P2pHostOpts) {
+    this.unhostOthers(c, id);
     this.rooms.set(id, {
       host: c,
       info: {

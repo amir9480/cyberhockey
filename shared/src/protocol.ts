@@ -12,6 +12,8 @@ export function isRoomId(id: unknown): id is string {
 export const NAME_MAX = 16;
 /** Biggest message either way. WebRTC session descriptions relayed for P2P are the largest, a few KB. */
 export const MAX_FRAME_BYTES = 16384;
+/** Websocket close code: the player did nothing for too long. The client waits for them before reconnecting. */
+export const CLOSE_IDLE = 4000;
 
 /** Cleans a display name: control characters stripped, trimmed, 1–16 chars (empty becomes `fallback`). */
 export function cleanName(raw: unknown, fallback = 'Player'): string {
@@ -73,7 +75,9 @@ export type ErrorCode =
   | 'color_locked'
   | 'cannot_start'
   | 'quick_room'
-  | 'bad_request';
+  | 'bad_request'
+  /** The player is already in another game (in another tab). */
+  | 'busy';
 
 export interface LobbyRoom {
   id: string;

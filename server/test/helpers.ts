@@ -2,14 +2,15 @@ import { randomBytes } from 'node:crypto';
 import WebSocket from 'ws';
 import { decodeServer } from '@airhockey/shared/binary';
 import { createGameServer, type GameServer } from '../src/app';
+import type { ServerConfig } from '../src/config';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export type Msg = Record<string, any> & { t: string };
 
 export const TEST_CONFIG = { pauseBudget: 0.3, countdown: 0.05, grace: 200, heartbeat: 1000 };
 
-export async function startServer() {
-  const server = createGameServer(TEST_CONFIG);
+export async function startServer(overrides: Partial<ServerConfig> = {}) {
+  const server = createGameServer({ ...TEST_CONFIG, ...overrides });
   const port = await server.listen(0);
   return { server, port };
 }

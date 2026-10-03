@@ -33,6 +33,18 @@ pnpm start      # one process: serves web/dist, /api and /ws on :3000 (PORT over
 
 Rooms live in memory on a single instance; a restart drops running games.
 
+Limits (environment variables):
+
+- `MAX_CONNS_PER_IP` (16): open websockets per address (per /64 block for IPv6); more get `429`.
+- `MAX_CONNS` (5000): open websockets in all.
+- `IDLE_TIMEOUT` (900, seconds): a connection that sends nothing but keep-alive pings for this long is closed (code `4000`). Dead connections (no pong) go after 30 s. The page doesn't reconnect after an idle close until the player clicks, presses a key or comes back to the tab.
+- `TRUST_PROXY` (0): how many reverse proxies sit in front of the server. Set it (usually `1`) behind nginx, Caddy or a load balancer, or every player shares the proxy's address and the per-address limit applies to all of them together. Leave it at `0` when nothing is in front: otherwise clients can fake their address with `X-Forwarded-For`.
+- `APP_URL` (`http://localhost:3000`): the public site URL, e.g. `https://cyberhockey.fetchrover.app`. Needed at build time too (the page's canonical, Open Graph and Twitter tags; `VITE_APP_URL` overrides it there) and at run time: browsers may open the game socket only from pages on this origin or on the host they connected to (else `403`). With Docker: `APP_URL=https://… docker compose up --build`.
+
+Every response carries security headers (helmet: CSP, HSTS over HTTPS, nosniff, Referrer-Policy, Permissions-Policy, …). Other sites may embed the game in an iframe (`frame-ancestors *`, no `X-Frame-Options`); they can't read into it, and the guest token sits in localStorage, not a cookie. An embedder grants fullscreen with `<iframe allow="fullscreen">`.
+
+Each connection may send up to 30 JSON messages a second (bursts of 120) and 500 binary input frames a second; extra messages are dropped and a connection that keeps flooding is closed. A player (one browser's guest token) is in one game at a time: joining a different game from another tab is refused with `busy`.
+
 ## Multiplayer notes
 
 - Identity is a temporary guest token kept in `localStorage` (`airhockey.token`) plus a display name; the server derives the player id from the token behind an `AuthProvider` (`server/src/auth.ts`), so real auth can replace it.
