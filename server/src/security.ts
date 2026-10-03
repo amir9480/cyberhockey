@@ -2,6 +2,9 @@ import type { IncomingMessage } from 'node:http';
 import type { RequestHandler } from 'express';
 import helmet from 'helmet';
 
+/** Analytics (PostHog, EU or US cloud). */
+const POSTHOG = 'https://*.posthog.com';
+
 /**
  * Security headers for every response. Other sites may embed the game in an iframe: they still can't read anything
  * inside it (the same-origin policy keeps its DOM and storage from them, and the guest token lives in localStorage,
@@ -15,14 +18,14 @@ export function securityHeaders(appUrl: string): RequestHandler[] {
         useDefaults: false,
         directives: {
           defaultSrc: ["'self'"],
-          // Alpine evaluates its x- expressions with `new Function`.
-          scriptSrc: ["'self'", "'unsafe-eval'"],
+          // Alpine evaluates its x- expressions with `new Function`; PostHog loads its optional parts from its own hosts.
+          scriptSrc: ["'self'", "'unsafe-eval'", POSTHOG],
           // Alpine's :style bindings write style attributes.
           styleSrc: ["'self'", "'unsafe-inline'"],
           imgSrc: ["'self'", 'data:', 'blob:'],
           fontSrc: ["'self'", 'data:'],
           // Older Safari doesn't count ws(s) to this host as 'self'.
-          connectSrc: ["'self'", 'ws:', 'wss:'],
+          connectSrc: ["'self'", 'ws:', 'wss:', POSTHOG],
           // The game-loop ticker runs in a blob: worker.
           workerSrc: ["'self'", 'blob:'],
           objectSrc: ["'none'"],

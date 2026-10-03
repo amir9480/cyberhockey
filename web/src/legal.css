@@ -1,0 +1,30 @@
+/* Privacy policy and terms: plain reading pages in the game's colours. */
+:root { color-scheme: dark; }
+html, body { margin: 0; background: #05030a; }
+body {
+  min-height: 100vh; box-sizing: border-box; padding: max(16px, env(safe-area-inset-top)) 16px 48px;
+  font: 400 15px/1.65 ui-sans-serif, system-ui, sans-serif; color: #c9c0ea;
+  background: radial-gradient(ellipse at top, rgba(140, 90, 255, 0.18), transparent 60%) no-repeat, #05030a;
+}
+main { max-width: 720px; margin: 0 auto; }
+
+.back {
+  display: inline-flex; align-items: center; gap: 8px; margin: 8px 0 24px; padding: 10px 18px; border-radius: 999px;
+  font: 600 12px/1 ui-sans-serif, system-ui, sans-serif; letter-spacing: 0.14em; color: #fff; text-decoration: none;
+  background: rgba(140, 90, 255, 0.22); border: 1px solid rgba(160, 120, 255, 0.5); transition: background .2s, box-shadow .2s;
+}
+.back:hover { background: rgba(140, 90, 255, 0.4); box-shadow: 0 0 20px rgba(140, 100, 255, 0.6); }
+.back:focus-visible, a:focus-visible { outline: 2px solid #6ff; outline-offset: 2px; }
+
+h1 {
+  margin: 0 0 4px; font-size: clamp(26px, 6vw, 36px); line-height: 1.2; letter-spacing: 0.06em; color: #fff;
+  text-shadow: 0 0 12px #8c5aff, 0 0 32px rgba(0, 229, 255, 0.5);
+}
+.updated { margin: 0 0 32px; font-size: 13px; color: #7d70a8; }
+h2 { margin: 36px 0 8px; font-size: 18px; letter-spacing: 0.04em; color: #fff; }
+p, ul { margin: 0 0 12px; }
+ul { padding-left: 22px; }
+li { margin-bottom: 6px; }
+strong { color: #fff; font-weight: 600; }
+a { color: #6ff; text-underline-offset: 3px; }
+code { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; color: #fff; background: rgba(160, 120, 255, 0.15); padding: 1px 5px; border-radius: 4px; }

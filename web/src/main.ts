@@ -9,6 +9,7 @@ import { Multiplayer, savedRoom, type RoomRef, type Standing } from './net/mp';
 import { Countdown } from './game/countdown';
 import { SeatNames } from './game/seatnames';
 import { Alpine, css, focusIn, setNote, show, ui, type Screen } from './ui';
+import { gameEnded, gameStarted } from './analytics';
 
 const canvas = document.getElementById('view') as HTMLCanvasElement;
 const view = new View(canvas);
@@ -221,8 +222,15 @@ function showResult(winner: number, scores: number[]) {
 }
 
 view.onGameOver = (w, s) => {
-  if (ui.mode === 'sp') showResult(w, s);
+  if (ui.mode !== 'sp') return;
+  gameEnded('finished', { won: w === 0, scores: s.join('-') });
+  showResult(w, s);
 };
+
+/** A single player game began (analytics): what it was set up with. */
+function spStarted() {
+  gameStarted('single', { players: ui.sp.players, difficulty: ui.sp.difficulty, win_score: ui.sp.winScore });
+}
 
 function setPlaying(on: boolean) {
   playing = on;
@@ -305,16 +313,21 @@ function toMenu() {
   url.searchParams.delete('players');
   history.replaceState(null, '', url);
   if (document.fullscreenElement) void document.exitFullscreen();
+  gameEnded('quit');
   show('home');
 }
 
 function restartSingle() {
+  gameEnded('restarted');
+  spStarted();
   view.restart();
   void start();
 }
 
 addEventListener('keydown', (e) => {
   if (ui.mode === 'sp' && (e.key === 'r' || e.key === 'R') && playing) {
+    gameEnded('restarted');
+    spStarted();
     view.restart();
     view.countdown = COUNTDOWN;
   }
@@ -553,6 +566,7 @@ Alpine.data('app', () => ({
     save(MALLET_KEY, setMalletScale(Number(v)));
   },
   spStart() {
+    spStarted();
     view.restart();
     void start();
   },

@@ -48,7 +48,8 @@ export function createGameServer(overrides: Partial<ServerConfig> = {}, auth: Au
       }
       res.set('Cache-Control', 'no-cache').type('html').send(html.replace('<head>', `<head>\n    <meta name="build" content="${BUILD_ID}" />`));
     });
-    app.use(express.static(cfg.webDir, { index: false })); // the built frontend, same in dev and production
+    // The built frontend, same in dev and production; /privacy finds privacy.html.
+    app.use(express.static(cfg.webDir, { index: false, extensions: ['html'] }));
   }
 
   const http = createServer(app);

@@ -2,6 +2,7 @@ import type { LeftReason, LobbyRoom, P2pLobbyRoom, PauseEntry, SeatInfo, ServerM
 import { PALETTE_SIZE, clampMalletScale, clampWinScore } from '@airhockey/shared/room';
 import type { PlayerCount } from '@airhockey/shared/layout';
 import { PALETTE_HEX } from '../game/colors';
+import { gameEnded, gameStarted } from '../analytics';
 import { Alpine, css, focusIn, setNote, ui, type LobbyRow } from '../ui';
 import type { Countdown } from '../game/countdown';
 import type { Input } from '../game/input';
@@ -243,6 +244,7 @@ export class Multiplayer {
 
   /** Forget every room and game: nothing of the last one may drive the view (`NetGame` owns its `onFrame`). */
   private reset() {
+    gameEnded('quit');
     this.endGameUi();
     this.game?.stop();
     this.game = null;
@@ -377,6 +379,13 @@ export class Multiplayer {
     this.active = true;
     this.selfPaused = false;
     this.pauses = [];
+    gameStarted('multi', {
+      players: m.players,
+      humans: m.seats.filter((s) => !s.ai).length,
+      net: this.mode.kind,
+      quick: !!this.room?.quick,
+      win_score: m.settings.winScore,
+    });
     this.deps.engage();
     this.setScreen('game');
     this.renderPause();
@@ -401,6 +410,7 @@ export class Multiplayer {
     this.endGameUi();
     this.showingResult = true;
     const mine = this.game?.localSeat ?? -1;
+    gameEnded(m.reason === 'forfeit' ? 'forfeit' : 'finished', { won: m.winner >= 0 && m.winner === mine, scores: m.scores.join('-') });
     this.game?.stop();
     this.game = null;
     const winner = m.seats[m.winner] ?? this.seats[m.winner];
@@ -430,6 +440,7 @@ export class Multiplayer {
 
   private onLeft(reason: LeftReason) {
     if (!this.open) return;
+    gameEnded(reason === 'hostLeft' ? 'host_left' : reason);
     this.mode.leave(); // P2P: hang up on the host
     this.endGameUi();
     this.game?.stop();
@@ -453,6 +464,7 @@ export class Multiplayer {
   /** P2P: the connection to the host failed or broke. */
   private onLost(why: LostReason) {
     if (!this.open) return;
+    gameEnded('connection_lost');
     const inRoom = !!this.room;
     this.endGameUi();
     this.game?.stop();

@@ -10,6 +10,9 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile
 COPY . .
 # Public site URL: baked into index.html's canonical/OG/Twitter tags, and the origin allowed to open the game socket.
 ARG APP_URL
+# PostHog project key (public, it ships in the page) and API host; no key, no analytics.
+ARG POSTHOG_KEY
+ARG POSTHOG_HOST
 RUN pnpm build
 
 FROM base AS prod-deps
