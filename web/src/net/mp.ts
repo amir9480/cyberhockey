@@ -453,7 +453,11 @@ export class Multiplayer {
     ui.result.open = false;
     this.setUrl(null);
     if (why === 'unreachable') {
-      setNote(ui.lobby.note, "Couldn't connect to this room directly. Turn off your VPN, or play on the Finland server.", true);
+      setNote(
+        ui.lobby.note,
+        "Couldn't connect to this room directly. Turn off your VPN. On a phone hotspot direct play can't work: use a Wi-Fi router or the Finland server.",
+        true,
+      );
     } else this.toast(inRoom ? 'Lost connection to the host' : "Couldn't reach the host");
     this.setScreen('lobby');
   }
