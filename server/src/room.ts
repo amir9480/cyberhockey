@@ -500,11 +500,11 @@ export class Room {
       g.acc -= DT;
       g.tick++;
       this.feedInputs(g);
-      // Paused or counting down: mallets move, the puck stands still.
+      // Paused: mallets move, the puck stands still. Counting down: everything stands still.
       if (g.paused.size > 0) g.match.moveMallets(DT);
       else if (g.countdown > 0) {
         g.countdown = Math.max(0, g.countdown - DT);
-        g.match.moveMallets(DT);
+        g.match.holdMallets();
       } else g.match.step(DT);
       // Events first: a client takes a predicted hit the state comes without as one that didn't happen.
       this.flush(g);

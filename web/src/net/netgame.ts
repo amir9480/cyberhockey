@@ -256,8 +256,10 @@ export class NetGame {
     if (to - this.inputTick > MAX_TICKS_PER_FRAME) this.inputTick = to - MAX_TICKS_PER_FRAME;
     const first = this.inputTick + 1;
     const sent: number[] = [];
+    // Counting down: the server holds every mallet still, so it stays put here too.
+    const hold = this.pred.countdownEnd;
     for (let t = first; t <= to; t++) {
-      m.update(TICK);
+      if (t > hold) m.update(TICK);
       m.pos.x = quantize(m.pos.x);
       m.pos.y = quantize(m.pos.y);
       this.pred.addInput(t, m.pos.x, m.pos.y);
@@ -327,6 +329,7 @@ export class NetGame {
 
   stop() {
     this.view.onFrame = null;
+    this.view.stopCinematic();
   }
 }
 

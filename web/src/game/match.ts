@@ -62,9 +62,9 @@ export class Match {
     this.ball.setPosition({ x: p.x + this.glide.x, y: p.y + this.glide.y });
   }
 
-  /** Countdown before play: mallets move, the puck waits. */
-  hold(dt: number) {
-    this.core.moveMallets(dt);
+  /** Countdown before play: mallets and puck wait. */
+  hold() {
+    this.core.holdMallets();
   }
 
   update(dt: number) {

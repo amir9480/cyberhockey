@@ -165,6 +165,34 @@
         position: fixed; inset: 0; z-index: 6; display: flex; align-items: center; justify-content: center; pointer-events: none;
         font: 800 clamp(96px, 28vw, 220px)/1 ui-sans-serif, system-ui, sans-serif; color: #fff; text-shadow: 0 0 18px #8c5aff, 0 0 48px #00e5ff, 0 0 90px #00e5ff;
       }
+      /* Each label is its own span: the new one spins and zooms in while the old one spins and shrinks away. */
+      #countdown span { position: absolute; will-change: transform, opacity, filter; }
+      #countdown .in { animation: cdIn 1s cubic-bezier(0.2, 0.9, 0.3, 1) both; }
+      #countdown .out { animation: cdOut 0.22s ease-in forwards; }
+      #countdown .go.in { animation: cdGoIn 0.4s cubic-bezier(0.2, 1.4, 0.4, 1) both; }
+      #countdown .go.out { animation: cdGoOut 0.4s ease-in forwards; }
+      @keyframes cdIn {
+        0% { opacity: 0; transform: scale(2.6) rotate(-35deg); filter: blur(8px); }
+        28% { opacity: 1; transform: scale(1) rotate(0deg); filter: blur(0); }
+        100% { opacity: 1; transform: scale(0.88) rotate(5deg); filter: blur(0); }
+      }
+      @keyframes cdOut {
+        from { opacity: 1; transform: scale(0.88) rotate(5deg); filter: blur(0); }
+        to { opacity: 0; transform: scale(0.3) rotate(40deg); filter: blur(6px); }
+      }
+      @keyframes cdGoIn {
+        from { opacity: 0; transform: scale(0.2) rotate(25deg); }
+        to { opacity: 1; transform: scale(1) rotate(0deg); }
+      }
+      @keyframes cdGoOut {
+        from { opacity: 1; transform: scale(1); filter: blur(0); }
+        to { opacity: 0; transform: scale(2.2); filter: blur(10px); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #countdown .in, #countdown .go.in { animation: cdFade 0.2s ease-out both; }
+        #countdown .out, #countdown .go.out { animation: cdFade 0.2s ease-in reverse forwards; }
+        @keyframes cdFade { from { opacity: 0; } to { opacity: 1; } }
+      }
       #countdown[hidden], #banner[hidden], #hint[hidden], #toast[hidden] { display: none; }
       #banner {
         position: fixed; inset: 0; z-index: 15; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;

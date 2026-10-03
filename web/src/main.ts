@@ -415,6 +415,7 @@ function setPlaying(on: boolean) {
   } else {
     input.release();
     view.countdown = 0;
+    view.stopCinematic();
     countdown.clear();
     if (document.pointerLockElement) document.exitPointerLock();
   }

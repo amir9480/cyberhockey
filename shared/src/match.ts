@@ -150,7 +150,16 @@ export class MatchCore {
     if (this.driven.has(seat)) this.driven.set(seat, p);
   }
 
-  /** Mallets move one step without any game happening (countdowns). */
+  /** Mallets stand still for one step (countdowns): a driven mallet's position for it is dropped. */
+  holdMallets() {
+    for (const m of this.mallets) {
+      m.prev.x = m.pos.x;
+      m.prev.y = m.pos.y;
+      if (this.driven.has(m.seat)) this.driven.set(m.seat, null);
+    }
+  }
+
+  /** Mallets move one step without any game happening (pauses, between rounds). */
   moveMallets(dt: number) {
     for (const m of this.mallets) {
       if (!this.driven.has(m.seat)) {

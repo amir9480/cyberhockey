@@ -101,6 +101,12 @@ export class Predictor {
     return this.auth?.tick ?? -1;
   }
 
+  /** Last tick of the countdown the latest server state is in (mallets stand still up to it), or -1. */
+  get countdownEnd() {
+    const a = this.auth;
+    return a && a.freeze > 0 && a.freeze < FREEZE_HELD ? a.tick + a.freeze : -1;
+  }
+
   /** Newest tick there is a picture for. */
   get latest() {
     return this.simTick;

@@ -683,9 +683,15 @@ export class Multiplayer {
     );
   }
 
+  /** Each frame of a countdown (0 once it ends): the numbers and the camera cinematic. Paused: both stop at once. */
   private showCountdown(cd: number) {
-    if (this.active && !this.pauses.length) this.deps.countdown.set(cd);
-    else this.deps.countdown.clear();
+    if (this.active && !this.pauses.length && !this.selfPaused) {
+      this.deps.countdown.set(cd);
+      this.deps.view.cinematic(cd);
+    } else {
+      this.deps.countdown.clear();
+      this.deps.view.stopCinematic();
+    }
   }
 
   private isKickable(p: PauseEntry) {

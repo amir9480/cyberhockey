@@ -48,6 +48,20 @@ export const DEFAULT_PITCH = 50;
 export const MIN_PITCH = 15;
 export const MAX_PITCH = 89; // not 90: looking exactly down makes lookAt degenerate
 
+// Countdown cinematic: the camera orbits the table, lingering low behind each opponent and whipping on to the next
+// seat on each count, ending behind the player when play starts.
+const CINE_PITCH = THREE.MathUtils.degToRad(22);
+const CINE_ZOOM = 0.85; // closer than the fitted distance
+const CINE_DRIFT = THREE.MathUtils.degToRad(5); // very slow orbit while lingering, per second
+const CINE_SWING = 0.1; // seconds the whip to the next seat takes
+
+/** Where the camera looks from: horizontal direction from the table centre, tilt, and distance relative to the fit. */
+interface Shot {
+  dir: Vec2;
+  pitch: number;
+  zoom: number;
+}
+
 export class View {
   private renderer: THREE.WebGLRenderer;
   private composer: EffectComposer;
@@ -58,7 +72,12 @@ export class View {
   private backdropMat: THREE.ShaderMaterial;
   private cyber = new CyberFx();
   private scene = new THREE.Scene();
+  /** The camera rendered: the player's view, or the countdown cinematic's. */
   private camera = new THREE.PerspectiveCamera(36, 1, 0.1, 200);
+  /** Always the player's view: the pointer is mapped onto the table through it, whatever the camera shows. */
+  private aim = new THREE.PerspectiveCamera(36, 1, 0.1, 200);
+  /** The countdown cinematic running: seconds of countdown it spans and has left, and seconds since it hit 0. */
+  private cine: { total: number; left: number; after: number } | null = null;
   private table: Table | null = null;
   /** The local player's mallet. */
   mallet: Mallet | null = null;
@@ -80,7 +99,7 @@ export class View {
   private fpsT = performance.now();
   /** False while paused: the game freezes but keeps rendering. */
   running = false;
-  /** Single player: seconds of countdown before the puck moves (mallets already can). */
+  /** Single player: seconds of countdown before the puck and mallets move. */
   countdown = 0;
   /** Single player: called each frame of a countdown with the seconds left, and once with 0 when it ends. */
   onCountdown: ((secs: number) => void) | null = null;
@@ -99,7 +118,6 @@ export class View {
   private last = performance.now();
   private ray = new THREE.Raycaster();
   private plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-  private camDist = 30;
   private start = performance.now();
 
   constructor(canvas: HTMLCanvasElement) {
@@ -298,23 +316,36 @@ export class View {
     this.composer.setSize(w, h);
     this.bloom.resolution.set(w * bs, h * bs);
     this.bloom.setSize(w * bs, h * bs);
-    this.camera.aspect = w / h;
-    this.camera.updateProjectionMatrix();
+    for (const cam of [this.camera, this.aim]) {
+      cam.aspect = w / h;
+      cam.updateProjectionMatrix();
+    }
     this.fitCamera();
     // Spark size: pixels per world unit at distance 1.
     this.cyber.pxScale.value = (h * dpr) / (2 * Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2));
   };
 
-  private place(dist: number) {
-    const y = Math.sin(this.pitch) * dist;
-    const z = Math.cos(this.pitch) * dist;
-    this.camera.position.set(this.camDir.x * z, y, this.camDir.y * z);
-    this.camera.lookAt(0, 0, 0);
-    this.camera.updateMatrixWorld();
+  /** The player's own view: behind their goal, at their chosen tilt. */
+  private get playerShot(): Shot {
+    return { dir: this.camDir, pitch: this.pitch, zoom: 1 };
   }
 
-  /** Smallest camera distance that keeps the whole table (with margin) on screen. */
+  /** Re-fit the player's view (aim camera, and the rendered one unless the cinematic owns it). */
   private fitCamera() {
+    this.fit(this.aim, this.playerShot);
+    if (!this.cine) this.fit(this.camera, this.playerShot);
+  }
+
+  private static place(cam: THREE.PerspectiveCamera, shot: Shot, dist: number) {
+    const y = Math.sin(shot.pitch) * dist;
+    const z = Math.cos(shot.pitch) * dist;
+    cam.position.set(shot.dir.x * z, y, shot.dir.y * z);
+    cam.lookAt(0, 0, 0);
+    cam.updateMatrixWorld();
+  }
+
+  /** Put `cam` at `shot`, at the smallest distance that keeps the whole table (with margin) on screen, times its zoom. */
+  private fit(cam: THREE.PerspectiveCamera, shot: Shot) {
     if (!this.table) return;
     const poly: Vec2[] = this.table.layout.polygon;
     const pts: THREE.Vector3[] = [];
@@ -332,7 +363,7 @@ export class View {
     const bottom = -0.82;
     const w = innerWidth;
     const h = innerHeight;
-    this.camera.clearViewOffset();
+    cam.clearViewOffset();
 
     const p = new THREE.Vector3();
     const bounds = () => {
@@ -340,7 +371,7 @@ export class View {
       let minY = Infinity;
       let maxY = -Infinity;
       for (const pt of pts) {
-        p.copy(pt).project(this.camera);
+        p.copy(pt).project(cam);
         maxX = Math.max(maxX, Math.abs(p.x));
         minY = Math.min(minY, p.y);
         maxY = Math.max(maxY, p.y);
@@ -352,30 +383,118 @@ export class View {
     let hi = 250;
     for (let i = 0; i < 24; i++) {
       const mid = (lo + hi) / 2;
-      this.place(mid);
+      View.place(cam, shot, mid);
       const b = bounds();
       if (b.maxX <= marginX && b.maxY - b.minY <= top - bottom) hi = mid;
       else lo = mid;
     }
-    this.camDist = hi;
-    this.place(this.camDist);
+    View.place(cam, shot, hi * shot.zoom);
 
     const b = bounds();
     const shift = (top + bottom) / 2 - (b.minY + b.maxY) / 2; // NDC units, + = move up
-    if (Math.abs(shift) > 1e-4) this.camera.setViewOffset(w, h, 0, (shift * h) / 2, w, h);
+    if (Math.abs(shift) > 1e-4) cam.setViewOffset(w, h, 0, (shift * h) / 2, w, h);
   }
 
-  /** Screen px (client coords) to a point on the table plane. */
+  /**
+   * Countdown cinematic, fed each frame with the countdown's seconds left; 0 when it ends (the camera then whips back
+   * to the player). A countdown that starts again (a restart) starts the cinematic over.
+   */
+  cinematic(left: number) {
+    if (left > 0) {
+      if (!this.cine || left > this.cine.left + 1e-6) this.cine = { total: Math.ceil(left - 1e-6), left, after: 0 };
+      else this.cine.left = left;
+    } else if (this.cine) this.cine.left = 0;
+  }
+
+  /** Cut the cinematic short (a pause): straight back to the player's view, where the camera settings show. */
+  stopCinematic() {
+    if (!this.cine) return;
+    this.cine = null;
+    this.fit(this.camera, this.playerShot);
+  }
+
+  /**
+   * The cinematic's shot `e` seconds in. The camera goes round the table in one direction, lingering at a stop on each
+   * count (drifting on round while there) and whipping on to the next stop as the count changes, the last whip landing
+   * behind the player as play starts. The stops are each opponent's end in turn, and with fewer than three
+   * opponents the player's own end on 1. Two players: the opponent's end from either side of them (3, 2).
+   */
+  private cineShot(e: number, total: number): Shot {
+    const seats = this.table!.layout.seats;
+    const yaw = (i: number) => Math.atan2(-seats[i].inward.y, -seats[i].inward.x);
+    const own = yaw(this.localSeat);
+    const tau = Math.PI * 2;
+    const deg = THREE.MathUtils.degToRad;
+    // Each stop's angle past the player's, in the orbit's direction.
+    const opponents = seats
+      .filter((s) => s.index !== this.localSeat)
+      .map((s) => (((yaw(s.index) - own) % tau) + tau) % tau)
+      .sort((p, q) => p - q);
+    // Low and to one side at the player's own end: the last count, when there are counts to spare.
+    const mine = deg(300);
+    const stops =
+      seats.length === 2
+        ? [deg(150), deg(210), mine]
+        : seats.length === 3
+          ? [...opponents, mine]
+          : opponents;
+    const opp = stops.slice(-total);
+    const m = opp.length;
+    const startOf = (j: number) => (j === 0 ? 0 : total - m + j);
+    const endOf = (j: number) => total - m + j + 1;
+    // Angle past the player's while lingering at stop j (j === m: the player's own seat, a full turn on).
+    const at = (j: number, t: number) =>
+      j === m ? tau : opp[j] + CINE_DRIFT * (t - (startOf(j) + endOf(j)) / 2);
+    const shot = (a: number, pitch: number, zoom: number): Shot => ({
+      dir: { x: Math.cos(own + a), y: Math.sin(own + a) },
+      pitch,
+      zoom,
+    });
+
+    let j = 0;
+    while (j < m && e >= endOf(j)) j++;
+    // Whipping from stop j - 1 to stop j?
+    const b = j > 0 ? endOf(j - 1) : -Infinity;
+    if (e < b + CINE_SWING) {
+      const u = (e - b) / CINE_SWING;
+      const k = u < 0.5 ? 4 * u * u * u : 1 - (-2 * u + 2) ** 3 / 2;
+      const from = at(j - 1, b);
+      const to = at(j, b + CINE_SWING);
+      const home = j === m ? k : 0;
+      return shot(
+        from + (to - from) * k,
+        CINE_PITCH + (this.pitch - CINE_PITCH) * home,
+        CINE_ZOOM + (1 - CINE_ZOOM) * home,
+      );
+    }
+    return j === m ? this.playerShot : shot(at(j, e), CINE_PITCH, CINE_ZOOM);
+  }
+
+  /** Move the rendered camera along the cinematic; once the last whip has landed, hand back the player's view. */
+  private updateCinematic(dt: number) {
+    const c = this.cine;
+    if (!c || !this.table) return;
+    if (c.left <= 0) {
+      c.after += dt;
+      if (c.after >= CINE_SWING) {
+        this.stopCinematic();
+        return;
+      }
+    }
+    this.fit(this.camera, this.cineShot(c.total - c.left + c.after, c.total));
+  }
+
+  /** Screen px (client coords) to a point on the table plane, as the player sees it. */
   screenToTable(cx: number, cy: number): Vec2 | null {
     const ndc = new THREE.Vector2((cx / innerWidth) * 2 - 1, -(cy / innerHeight) * 2 + 1);
-    this.ray.setFromCamera(ndc, this.camera);
+    this.ray.setFromCamera(ndc, this.aim);
     const hit = this.ray.ray.intersectPlane(this.plane, new THREE.Vector3());
     return hit ? { x: hit.x, y: hit.z } : null;
   }
 
-  /** Table point to screen px (client coords). */
+  /** Table point to screen px (client coords), as the player sees it. */
   tableToScreen(p: Vec2, height = 0): Vec2 {
-    const v = new THREE.Vector3(p.x, height, p.y).project(this.camera);
+    const v = new THREE.Vector3(p.x, height, p.y).project(this.aim);
     return { x: ((v.x + 1) / 2) * innerWidth, y: ((1 - v.y) / 2) * innerHeight };
   }
 
@@ -395,18 +514,22 @@ export class View {
       while (this.acc >= SIM_STEP && steps < MAX_STEPS) {
         if (this.countdown > 0) {
           this.countdown = Math.max(0, this.countdown - SIM_STEP);
-          this.match?.hold(SIM_STEP);
+          this.match?.hold();
         } else this.match?.update(SIM_STEP);
         this.acc -= SIM_STEP;
         steps++;
       }
       if (steps === MAX_STEPS) this.acc = 0; // way behind (e.g. tab was asleep): drop the backlog
-      if (counting) this.onCountdown?.(this.countdown);
+      if (counting) {
+        this.onCountdown?.(this.countdown);
+        this.cinematic(this.countdown);
+      }
       this.fx.update(dt);
     } else {
       this.acc = 0;
     }
     this.onFrame?.(dt, now);
+    this.updateCinematic(dt);
     for (const m of this.mallets) m.sync();
     this.scores?.update();
     if (this.ball) this.ball.update(dt);
