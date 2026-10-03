@@ -10,7 +10,8 @@ export function isRoomId(id: unknown): id is string {
   return typeof id === 'string' && id.length === ROOM_ID_LENGTH && [...id].every((c) => ROOM_ID_ALPHABET.includes(c));
 }
 export const NAME_MAX = 16;
-export const MAX_FRAME_BYTES = 4096;
+/** Biggest message either way. WebRTC session descriptions relayed for P2P are the largest, a few KB. */
+export const MAX_FRAME_BYTES = 16384;
 
 /** Cleans a display name: control characters stripped, trimmed, 1–16 chars (empty becomes `fallback`). */
 export function cleanName(raw: unknown, fallback = 'Player'): string {
@@ -48,7 +49,19 @@ export type ClientMsg =
   | { t: 'in'; tick: number; m: number[] }
   | { t: 'pause' }
   | { t: 'resume' }
-  | { t: 'vote'; id: string };
+  | { t: 'vote'; id: string }
+  // P2P (server only introduces players; the host's browser runs the room). Each is answered with `p2pRoom`.
+  /** A new P2P room, hosted by the sender. */
+  | { t: 'p2pCreate'; public: boolean }
+  /** Where P2P room `room` is hosted. Unknown: the sender hosts it under that code (as `join` does on the server). */
+  | { t: 'p2pFind'; room: string }
+  /** A waiting P2P quick-play room of this size, or a new one the sender hosts. */
+  | { t: 'p2pQuick'; size: 2 | 4 }
+  /** A host's room as it is now (sent on every change): kept for finding it, and listed when public. */
+  | { t: 'p2pHost'; room: P2pRoomInfo }
+  | { t: 'p2pUnhost'; room: string }
+  /** WebRTC set-up for another connection (`to`: its `peer` id), relayed as is. */
+  | { t: 'signal'; to: string; data: unknown };
 
 // --- server -> client --------------------------------------------------------
 
@@ -70,6 +83,26 @@ export interface LobbyRoom {
   status: 'lobby' | 'playing';
   winScore: number;
   malletScale: number;
+}
+
+/** A P2P room as its host reports it. */
+export interface P2pRoomInfo extends LobbyRoom {
+  public: boolean;
+  quick: boolean;
+  /** A quick-play room still waiting for its one automatic start. */
+  fresh: boolean;
+}
+
+/** A listed P2P room. `peer`: the host's connection, to signal to. */
+export interface P2pLobbyRoom extends LobbyRoom {
+  peer: string;
+}
+
+/** How to set up a P2P room the receiver is to host. */
+export interface P2pHostOpts {
+  public: boolean;
+  quick: boolean;
+  cap: number;
 }
 
 export interface MemberInfo {
@@ -106,7 +139,12 @@ export type ServerMsg =
   | { t: 'hello'; id: string; token: string }
   | { t: 'pong'; c: number; st: number }
   | { t: 'error'; code: ErrorCode; msg: string }
-  | { t: 'lobby'; rooms: LobbyRoom[] }
+  /** Public rooms: on this server, and P2P ones hosted by players. */
+  | { t: 'lobby'; rooms: LobbyRoom[]; p2p: P2pLobbyRoom[] }
+  /** Answer to the P2P requests: connect to `peer`, or (null) host the room yourself with `host`. */
+  | { t: 'p2pRoom'; room: string; peer: string | null; host?: P2pHostOpts }
+  /** WebRTC set-up from connection `from`, player `id` (vouched for by the server). */
+  | { t: 'signal'; from: string; id: string; name: string; data: unknown }
   | {
       t: 'room';
       id: string;

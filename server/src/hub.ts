@@ -1,30 +1,29 @@
-import { randomInt } from 'node:crypto';
-import { ROOM_ID_ALPHABET, ROOM_ID_LENGTH, cleanName, isRoomId, type ClientMsg, type LobbyRoom } from '@airhockey/shared/protocol';
+import { handleConnMsg, newRoomId, type RoomOwner } from '@airhockey/shared/host/conn';
+import { Room, defaultSettings, type RoomOptions } from '@airhockey/shared/host/room';
+import { isRoomId, type ClientMsg, type LobbyRoom } from '@airhockey/shared/protocol';
 import { clampMalletScale, clampWinScore } from '@airhockey/shared/room';
 import type { Client } from './client';
 import type { ServerConfig } from './config';
-import { Room, defaultSettings } from './room';
+import { P2pRegistry } from './p2p';
 
-/** All rooms and the public room list. Single instance, in memory. */
-export class Hub {
+/** All rooms and the public room list (with the P2P rooms players host). Single instance, in memory. */
+export class Hub implements RoomOwner {
   readonly rooms = new Map<string, Room>();
+  readonly p2p = new P2pRegistry(() => this.publishList());
   private lobbySubs = new Set<Client>();
   /** JSON of each listed room's summary, to tell whether anything actually changed. */
   private summaries = new Map<string, string>();
-  private listJson = '{"t":"lobby","rooms":[]}';
+  private listJson = '{"t":"lobby","rooms":[],"p2p":[]}';
 
   constructor(private cfg: ServerConfig) {}
 
+  connected(client: Client) {
+    this.p2p.connected(client);
+  }
+
   handle(client: Client, msg: ClientMsg) {
+    if (handleConnMsg(client, msg) || this.p2p.handle(client, msg)) return;
     switch (msg.t) {
-      case 'ping':
-        client.send({ t: 'pong', c: Number(msg.c) || 0, st: Date.now() });
-        if (Number.isFinite(msg.rtt)) client.rtt = Math.max(0, Math.min(9999, Math.round(Number(msg.rtt))));
-        return;
-      case 'name':
-        client.name = cleanName(msg.name);
-        client.room?.rename(client);
-        return;
       case 'lobby':
         client.lobby = true;
         this.lobbySubs.add(client);
@@ -79,9 +78,6 @@ export class Hub {
         room.join(client);
         return;
       }
-      case 'leave':
-        client.room?.leave(client);
-        return;
       default:
         client.room?.handle(client, msg);
     }
@@ -89,6 +85,7 @@ export class Hub {
 
   disconnect(client: Client) {
     this.lobbySubs.delete(client);
+    this.p2p.disconnected(client);
     client.room?.drop(client);
   }
 
@@ -97,11 +94,9 @@ export class Hub {
   }
 
   /** A new room, under `wanted` if given and free, else a random id. */
-  private newRoom(opts: ConstructorParameters<typeof Room>[3], wanted?: string) {
+  private newRoom(opts: RoomOptions, wanted?: string) {
     let id = wanted && !this.rooms.has(wanted) ? wanted : '';
-    while (!id || this.rooms.has(id)) {
-      id = Array.from({ length: ROOM_ID_LENGTH }, () => ROOM_ID_ALPHABET[randomInt(ROOM_ID_ALPHABET.length)]).join('');
-    }
+    while (!id || this.rooms.has(id)) id = newRoomId();
     const room = new Room(id, this, this.cfg, opts);
     this.rooms.set(id, room);
     return room;
@@ -130,7 +125,7 @@ export class Hub {
     }
     // Rooms still in the lobby first, each group oldest first (Map keeps creation order).
     listed.sort((a, b) => Number(a.status === 'playing') - Number(b.status === 'playing'));
-    this.listJson = JSON.stringify({ t: 'lobby', rooms: listed });
+    this.listJson = JSON.stringify({ t: 'lobby', rooms: listed, p2p: this.p2p.list() });
     for (const c of this.lobbySubs) c.send(this.listJson);
   }
 

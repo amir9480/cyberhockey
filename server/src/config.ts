@@ -1,10 +1,6 @@
-export interface ServerConfig {
-  /** Pause time each player gets per game, seconds. */
-  pauseBudget: number;
-  /** Countdown before the puck moves (game start and after a pause), seconds. */
-  countdown: number;
-  /** How long a member who dropped keeps their place in a room lobby, ms. */
-  grace: number;
+import { DEFAULT_ROOM_CONFIG, type RoomConfig } from '@airhockey/shared/host/config';
+
+export interface ServerConfig extends RoomConfig {
   /** Server pings every this many ms; a connection silent for 3x is dropped. */
   heartbeat: number;
   /** Directory with the built frontend, if any. */
@@ -12,8 +8,6 @@ export interface ServerConfig {
 }
 
 export const DEFAULT_CONFIG: ServerConfig = {
-  pauseBudget: 60,
-  countdown: 3,
-  grace: 5000,
+  ...DEFAULT_ROOM_CONFIG,
   heartbeat: 10_000,
 };

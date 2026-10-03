@@ -48,7 +48,15 @@ export interface LobbyRow {
   sub: string;
   count: string;
   full: boolean;
+  /** P2P: measured ping label ('' for none). */
+  text: string;
+  level: PingLevel;
+  /** P2P: measured ping, ms. */
+  ms: number;
 }
+
+/** How a ping label is coloured. */
+export type PingLevel = 'none' | 'good' | 'ok' | 'bad' | 'testing' | 'fail';
 
 export interface MemberRow {
   id: string;
@@ -137,7 +145,17 @@ export const ui = Alpine.reactive({
   hint: false,
   toast: '',
 
-  lobby: { rooms: [] as LobbyRow[], note: note(), createPublic: true },
+  lobby: {
+    /** Which rooms: on the Finland server, or P2P (hosted by a player's browser). */
+    tab: 'server' as 'server' | 'p2p',
+    rooms: [] as LobbyRow[],
+    p2pRooms: [] as LobbyRow[],
+    /** Ping to the server, as a label. */
+    serverPing: '',
+    serverLevel: 'none' as PingLevel,
+    note: note(),
+    createPublic: true,
+  },
 
   room: {
     id: '',
@@ -159,6 +177,8 @@ export const ui = Alpine.reactive({
     showStart: false,
     startBlocked: false,
     copyText: 'COPY LINK',
+    /** How this room is connected, for P2P rooms ('' on the server). */
+    net: '',
   },
 });
 

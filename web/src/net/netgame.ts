@@ -7,7 +7,7 @@ import { DisplayTime, lagWeight, pathWeight, Predictor, type Sample } from '@air
 import type { SeatInfo, ServerMsg } from '@airhockey/shared/protocol';
 import type { RoomSettings } from '@airhockey/shared/room';
 import type { View } from '../game/view';
-import type { Socket } from './socket';
+import type { Transport } from './transport';
 
 type StartMsg = Extract<ServerMsg, { t: 'start' }>;
 type Msg<T extends ServerMsg['t']> = Extract<ServerMsg, { t: T }>;
@@ -84,7 +84,7 @@ export class NetGame {
 
   constructor(
     private view: View,
-    private socket: Socket,
+    private link: Transport,
     msg: StartMsg,
   ) {
     this.players = msg.players;
@@ -92,7 +92,7 @@ export class NetGame {
     this.settings = msg.settings;
     this.seats = msg.seats;
     this.scores = [...msg.scores];
-    this.clk = socket.clockOffset;
+    this.clk = link.clockOffset;
     this.build();
     this.load(msg);
     view.onFrame = (dt) => this.update(dt);
@@ -129,7 +129,7 @@ export class NetGame {
     this.cd = msg.cd;
     this.pred = new Predictor(this.players, this.settings.malletScale, this.seat);
     this.core.mallets.forEach((m, i) => m.place(st.m[i * 2], st.m[i * 2 + 1]));
-    this.clock = new NetClock(st, this.socket.rtt, this.serverNow());
+    this.clock = new NetClock(st, this.link.rtt, this.serverNow());
     this.inputTick = Math.floor(this.clock.now);
     this.queued = [];
     this.state(st);
@@ -242,7 +242,7 @@ export class NetGame {
 
   /** Follow the server clock (see `NetClock`). */
   private tickClock(dt: number) {
-    const off = this.socket.clockOffset - this.clk;
+    const off = this.link.clockOffset - this.clk;
     this.clk += Math.abs(off) > CLOCK_JUMP ? off : Math.max(-CLOCK_SLEW * dt, Math.min(CLOCK_SLEW * dt, off));
     this.clock.update(dt, this.serverNow());
   }
@@ -266,7 +266,7 @@ export class NetGame {
       sent.push(m.pos.x, m.pos.y);
     }
     this.inputTick = to;
-    this.socket.sendBytes(encodeIn(first, sent));
+    this.link.sendBytes(encodeIn(first, sent));
   }
 
   /** Puck and other mallets at their display times; play what the picture reached. */

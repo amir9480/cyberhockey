@@ -5,7 +5,7 @@ import { DEFAULT_ROOM, clampMalletScale, clampWinScore } from '@airhockey/shared
 import { DIFFICULTIES, type Difficulty } from '@airhockey/shared/ai';
 import { PALETTE_HEX, assignSeatColors, seatColor } from './game/colors';
 import { getName, setName } from './net/identity';
-import { Multiplayer, savedRoom, type Standing } from './net/mp';
+import { Multiplayer, savedRoom, type RoomRef, type Standing } from './net/mp';
 import { Countdown } from './game/countdown';
 import { SeatNames } from './game/seatnames';
 import { Alpine, css, focusIn, setNote, show, ui, type Screen } from './ui';
@@ -364,14 +364,14 @@ const mp: Multiplayer = new Multiplayer({
 });
 
 // --- name, main menu, settings ----------------------------------------------------
-function enterMulti(room: string | null, auto = false) {
+function enterMulti(room: RoomRef | null, auto = false) {
   ui.mode = 'mp';
   mp.enter(room, auto);
 }
 
 /** After the name: straight back into the room you were in, else the main menu. */
 function afterName() {
-  const room = new URLSearchParams(location.search).get('room') ?? savedRoom();
+  const room = savedRoom();
   if (room) enterMulti(room, true);
   else show('home');
 }
@@ -602,6 +602,7 @@ Alpine.data('app', () => ({
   createRoom: () => mp.createRoom(),
   quickPlay: (size: 2 | 4) => mp.quickPlay(size),
   joinRoom: (id: string) => mp.joinRoom(id),
+  setNetKind: (kind: 'server' | 'p2p') => mp.setKind(kind),
   copyLink: () => mp.copyLink(),
   roomColor: (i: number) => mp.pickColor(i),
   roomVisibility: (pub: boolean) => mp.setVisibility(pub),

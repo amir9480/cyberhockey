@@ -1,12 +1,15 @@
-import type { LeftReason, LobbyRoom, PauseEntry, SeatInfo, ServerMsg } from '@airhockey/shared/protocol';
+import type { LeftReason, LobbyRoom, P2pLobbyRoom, PauseEntry, SeatInfo, ServerMsg } from '@airhockey/shared/protocol';
 import { PALETTE_SIZE, clampMalletScale, clampWinScore } from '@airhockey/shared/room';
 import type { PlayerCount } from '@airhockey/shared/layout';
 import { PALETTE_HEX } from '../game/colors';
-import { Alpine, css, focusIn, setNote, ui } from '../ui';
+import { Alpine, css, focusIn, setNote, ui, type LobbyRow } from '../ui';
 import type { Countdown } from '../game/countdown';
 import type { Input } from '../game/input';
 import type { View } from '../game/view';
+import { P2pMode, ServerMode, type LostReason, type NetKind, type NetMode } from './modes';
 import { NetGame } from './netgame';
+import { Prober } from './probe';
+import { Signaler } from './rtc';
 import { Socket } from './socket';
 
 type RoomMsg = Extract<ServerMsg, { t: 'room' }>;
@@ -47,14 +50,46 @@ export interface MpDeps {
 }
 
 const ROOM_KEY = 'airhockey.room';
+const NET_KEY = 'airhockey.net';
 
-/** The room this player was last in (to go straight back to on a fresh start), or null. */
-export function savedRoom(): string | null {
+/** A room and how it is reached. */
+export interface RoomRef {
+  kind: NetKind;
+  id: string;
+}
+
+/** URL parameter holding the room id, per kind of room. */
+const URL_PARAM: Record<NetKind, string> = { server: 'room', p2p: 'p2p' };
+
+/** The room in the address bar, or the one this player was last in (to go straight back to on a fresh start). */
+export function savedRoom(): RoomRef | null {
+  const q = new URLSearchParams(location.search);
+  for (const kind of ['server', 'p2p'] as const) {
+    const id = q.get(URL_PARAM[kind]);
+    if (id) return { kind, id };
+  }
   try {
-    return localStorage.getItem(ROOM_KEY);
+    const raw = localStorage.getItem(ROOM_KEY);
+    if (!raw) return null;
+    const r = JSON.parse(raw) as Partial<RoomRef>;
+    return (r.kind === 'server' || r.kind === 'p2p') && typeof r.id === 'string' ? { kind: r.kind, id: r.id } : null;
   } catch {
     return null;
   }
+}
+
+/** The lobby tab the player last used. */
+function savedKind(): NetKind {
+  try {
+    return localStorage.getItem(NET_KEY) === 'p2p' ? 'p2p' : 'server';
+  } catch {
+    return 'server';
+  }
+}
+
+/** A ping label and how good it is. */
+function pingLabel(ms: number): { text: string; level: LobbyRow['level'] } {
+  return { text: `${ms} ms`, level: ms < 80 ? 'good' : ms < 160 ? 'ok' : 'bad' };
 }
 
 const clock = (secs: number) => {
@@ -62,10 +97,19 @@ const clock = (secs: number) => {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 };
 
-/** The multiplayer client: lobby and room screens, the socket, the online game and its pause/result UI. */
+/**
+ * The multiplayer client: lobby and room screens, the online game and its pause/result UI. Rooms are reached through
+ * a `NetMode` (the server, or P2P); the server socket stays open either way, for the lobby list and P2P introductions.
+ */
 export class Multiplayer {
   readonly socket = new Socket();
+  private sig = new Signaler(this.socket);
+  private prober = new Prober(this.sig);
+  private mode: NetMode;
   private myId = '';
+  private screen: MpScreen = 'lobby';
+  private lobbyTicker: ReturnType<typeof setInterval> | null = null;
+  private p2pRooms: P2pLobbyRoom[] = [];
   private room: RoomMsg | null = null;
   private wantedRoom: string | null = null;
   /** Rejoining the saved room on a fresh start: if it's gone, back to the start screen rather than the lobby. */
@@ -88,23 +132,55 @@ export class Multiplayer {
 
   constructor(private deps: MpDeps) {
     const { socket } = this;
-    socket.onMessage = (m) => this.onMessage(m);
+    this.mode = this.makeMode(savedKind());
+    ui.lobby.tab = this.mode.kind;
+    socket.onMessage = (m) => {
+      if (m.t === 'lobby') return this.onLobby(m.rooms, m.p2p ?? []);
+      if (m.t === 'signal') return this.sig.receive(m);
+      if (m.t === 'hello') this.myId = m.id;
+      this.mode.fromServer(m);
+    };
     socket.onOpen = () => {
       setNote(ui.lobby.note, '');
-      if (this.wantedRoom) socket.send({ t: 'join', room: this.wantedRoom });
+      this.mode.serverOpened(this.wantedRoom);
       socket.send({ t: 'lobby' });
     };
     socket.onClose = () => {
       if (!this.open) return;
+      // A P2P room doesn't need the server once everyone is connected.
+      if (this.mode.kind === 'p2p' && this.room) return;
       const msg = 'Connection lost, reconnecting…';
       if (this.active) this.toast(msg);
       else setNote(ui.lobby.note, msg, true);
     };
+    this.prober.onChange = () => this.renderP2pList();
   }
 
-  /** Round-trip time in ms, or 0 when unknown. */
+  private makeMode(kind: NetKind): NetMode {
+    const mode = kind === 'p2p' ? new P2pMode(this.socket, this.sig) : new ServerMode(this.socket);
+    mode.onMessage = (m) => this.onMessage(m);
+    mode.onLost = (why) => this.onLost(why);
+    return mode;
+  }
+
+  /** The lobby's tab: rooms on the server, or P2P rooms. Only from the lobby (not while in a room). */
+  setKind(kind: NetKind) {
+    ui.lobby.tab = kind;
+    try {
+      localStorage.setItem(NET_KEY, kind);
+    } catch {
+      /* the tab just won't be remembered */
+    }
+    if (kind === this.mode.kind) return;
+    this.mode.dispose();
+    this.mode = this.makeMode(kind);
+    setNote(ui.lobby.note, '');
+    this.updateProbing();
+  }
+
+  /** Round-trip time to whatever runs the game, in ms, or 0 when unknown (or when this player hosts it). */
   get ping() {
-    return this.socket.rtt;
+    return this.mode.link.rtt;
   }
 
   /** The running game's seats with scores and pings, or null when there is none. */
@@ -120,7 +196,7 @@ export class Multiplayer {
         color: s.color,
         score: scores[i] ?? 0,
         ai: s.ai,
-        ping: s.ai ? 0 : me ? this.socket.rtt : (this.pings[i] ?? 0),
+        ping: s.ai ? 0 : me ? this.mode.link.rtt : (this.pings[i] ?? 0),
         me,
       };
     });
@@ -138,15 +214,18 @@ export class Multiplayer {
   // --- lifecycle -------------------------------------------------------------
 
   /** Enter multiplayer; `room` joins that room straight away (`auto`: on a fresh start, not by the player's choice). */
-  enter(room: string | null, auto = false) {
+  enter(room: RoomRef | null, auto = false) {
     this.open = true;
-    this.wantedRoom = room;
+    if (room) this.setKind(room.kind);
+    this.wantedRoom = room?.id ?? null;
     this.autoJoin = auto && !!room;
     this.room = null;
     this.previewKey = ''; // single player may have rebuilt the table since
     setNote(ui.lobby.note, room ? 'Joining room…' : '');
-    this.deps.setScreen('lobby');
+    this.setScreen('lobby');
     this.socket.connect();
+    this.renderServerPing();
+    if (!this.lobbyTicker) this.lobbyTicker = setInterval(() => this.renderServerPing(), 1000);
   }
 
   /** Leave multiplayer completely (back to the start screen). */
@@ -154,7 +233,10 @@ export class Multiplayer {
     if (!this.open) return;
     this.open = false;
     this.endGameUi();
-    this.socket.send({ t: 'leave' });
+    this.mode.leave();
+    this.prober.setActive(false);
+    if (this.lobbyTicker) clearInterval(this.lobbyTicker);
+    this.lobbyTicker = null;
     this.socket.close();
     this.room = null;
     this.wantedRoom = null;
@@ -166,17 +248,37 @@ export class Multiplayer {
 
   /** The player saved a new name. */
   rename(name: string) {
-    if (this.open) this.socket.send({ t: 'name', name });
+    if (!this.open) return;
+    this.socket.send({ t: 'name', name });
+    if (this.mode.link !== this.socket) this.mode.link.send({ t: 'name', name });
+  }
+
+  /** Which overlay shows; measuring P2P pings only while their list is on screen. */
+  private setScreen(s: MpScreen) {
+    this.screen = s;
+    this.deps.setScreen(s);
+    this.updateProbing();
+  }
+
+  private updateProbing() {
+    const on = this.open && this.screen === 'lobby' && this.mode.kind === 'p2p';
+    this.prober.setActive(on);
+    if (on) this.prober.want(this.p2pRooms.map((r) => r.peer));
+  }
+
+  /** The room's link: `?room=` for one on the server, `?p2p=` for a P2P one. */
+  private roomUrl(room: string | null) {
+    const url = new URL(location.href);
+    url.searchParams.delete('players');
+    for (const p of Object.values(URL_PARAM)) url.searchParams.delete(p);
+    if (room) url.searchParams.set(URL_PARAM[this.mode.kind], room);
+    return url;
   }
 
   private setUrl(room: string | null) {
-    const url = new URL(location.href);
-    url.searchParams.delete('players');
-    if (room) url.searchParams.set('room', room);
-    else url.searchParams.delete('room');
-    history.replaceState(null, '', url);
+    history.replaceState(null, '', this.roomUrl(room));
     try {
-      if (room) localStorage.setItem(ROOM_KEY, room);
+      if (room) localStorage.setItem(ROOM_KEY, JSON.stringify({ kind: this.mode.kind, id: room } satisfies RoomRef));
       else localStorage.removeItem(ROOM_KEY);
     } catch {
       /* storage unavailable: a fresh start just won't rejoin */
@@ -198,9 +300,6 @@ export class Multiplayer {
         break;
       case 'st':
         this.game?.state(m);
-        break;
-      case 'lobby':
-        this.renderRoomList(m.rooms);
         break;
       case 'room':
         this.onRoom(m);
@@ -251,7 +350,7 @@ export class Multiplayer {
     this.renderRoom();
     if (this.showingResult) this.renderResultActions();
     if (this.active || this.showingResult) return;
-    this.deps.setScreen('room');
+    this.setScreen('room');
   }
 
   private onStart(m: StartMsg) {
@@ -262,14 +361,14 @@ export class Multiplayer {
     ui.result.open = false;
     if (this.game) this.game.restart(m);
     else {
-      this.game = new NetGame(this.deps.view, this.socket, m);
+      this.game = new NetGame(this.deps.view, this.mode.link, m);
       this.game.onCountdown = (cd) => this.showCountdown(cd);
     }
     this.active = true;
     this.selfPaused = false;
     this.pauses = [];
     this.deps.engage();
-    this.deps.setScreen('game');
+    this.setScreen('game');
     this.renderPause();
     // Browsers only allow fullscreen from a click; this works when the player clicked recently, else the hint shows.
     this.deps.goFullscreen().then(
@@ -303,7 +402,7 @@ export class Multiplayer {
     r.rows = m.seats.map((s, i) => ({ name: s.name, color: css(PALETTE_HEX[s.color] ?? 0xffffff), score: m.scores[i] ?? 0 }));
     r.note = m.reason === 'forfeit' ? 'Opponents left' : '';
     r.open = true;
-    this.deps.setScreen('game');
+    this.setScreen('game');
     this.renderResultActions();
     const isHost = this.room?.host === this.myId;
     void Alpine.nextTick(() => focusIn(isHost ? '#again' : '#toMenu'));
@@ -321,6 +420,7 @@ export class Multiplayer {
 
   private onLeft(reason: LeftReason) {
     if (!this.open) return;
+    this.mode.leave(); // P2P: hang up on the host
     this.endGameUi();
     this.game?.stop();
     this.game = null;
@@ -337,7 +437,25 @@ export class Multiplayer {
       return;
     }
     if (reason === 'kicked') this.toast('You were removed from the room');
-    this.deps.setScreen('lobby');
+    this.setScreen('lobby');
+  }
+
+  /** P2P: the connection to the host failed or broke. */
+  private onLost(why: LostReason) {
+    if (!this.open) return;
+    const inRoom = !!this.room;
+    this.endGameUi();
+    this.game?.stop();
+    this.game = null;
+    this.room = null;
+    this.wantedRoom = null;
+    this.showingResult = false;
+    ui.result.open = false;
+    this.setUrl(null);
+    if (why === 'unreachable') {
+      setNote(ui.lobby.note, "Couldn't connect to this room directly. Turn off your VPN, or play on the Finland server.", true);
+    } else this.toast(inRoom ? 'Lost connection to the host' : "Couldn't reach the host");
+    this.setScreen('lobby');
   }
 
   private onError(code: string, msg: string) {
@@ -350,7 +468,7 @@ export class Multiplayer {
         return;
       }
       setNote(ui.lobby.note, msg, true);
-      this.deps.setScreen('lobby');
+      this.setScreen('lobby');
       return;
     }
     if (code === 'cannot_start' && !this.showingResult) setNote(ui.room.note, msg, true);
@@ -374,35 +492,63 @@ export class Multiplayer {
   // --- lobby -------------------------------------------------------------------
 
   createRoom() {
-    this.socket.send({ t: 'create', public: ui.lobby.createPublic });
+    setNote(ui.lobby.note, this.mode.kind === 'p2p' ? 'Setting up your room…' : '');
+    this.mode.create(ui.lobby.createPublic);
   }
 
   quickPlay(size: 2 | 4) {
-    this.socket.send({ t: 'quick', size });
+    setNote(ui.lobby.note, this.mode.kind === 'p2p' ? 'Looking for players…' : '');
+    this.mode.quick(size);
   }
 
   joinRoom(id: string) {
-    this.socket.send({ t: 'join', room: id });
+    setNote(ui.lobby.note, this.mode.kind === 'p2p' ? 'Connecting to the host…' : '');
+    this.mode.join(id);
   }
 
-  private renderRoomList(rooms: LobbyRoom[]) {
-    ui.lobby.rooms = rooms.map((r) => ({
-      id: r.id,
-      host: r.host || 'Room',
-      sub: `${r.status === 'playing' ? 'PLAYING' : 'LOBBY'} · ${r.winScore} PTS · MALLET ${Math.round(r.malletScale * 100)}%`,
-      count: `${r.players}/${r.cap}`,
-      full: r.players >= r.cap,
-    }));
+  private onLobby(rooms: LobbyRoom[], p2p: P2pLobbyRoom[]) {
+    ui.lobby.rooms = rooms.map((r) => lobbyRow(r));
+    this.p2pRooms = p2p;
+    this.renderP2pList();
+    if (this.mode.kind === 'p2p' && this.screen === 'lobby') this.prober.want(p2p.map((r) => r.peer));
+  }
+
+  /** P2P rooms with their measured ping, quickest first; unreachable ones last. */
+  private renderP2pList() {
+    const rank = (r: LobbyRow) => (r.level === 'fail' ? 2e9 : r.level === 'testing' ? 1e9 : r.ms);
+    ui.lobby.p2pRooms = this.p2pRooms
+      .map((r) => {
+        const row = lobbyRow(r);
+        const p = this.prober.get(r.peer);
+        if (typeof p === 'number') Object.assign(row, pingLabel(p), { ms: p });
+        else if (p === 'fail') Object.assign(row, { text: "CAN'T CONNECT", level: 'fail' });
+        else Object.assign(row, { text: 'TESTING…', level: 'testing' });
+        return row;
+      })
+      .sort((a, b) => rank(a) - rank(b));
+  }
+
+  private renderServerPing() {
+    const s = this.socket;
+    const l = ui.lobby;
+    if (s.connected && s.rtt > 0) {
+      const { text, level } = pingLabel(Math.round(s.rtt));
+      l.serverPing = text;
+      l.serverLevel = level;
+    } else {
+      l.serverPing = 'CONNECTING…';
+      l.serverLevel = 'testing';
+    }
   }
 
   // --- room --------------------------------------------------------------------
 
   pickColor(color: number) {
-    this.socket.send({ t: 'color', color });
+    this.mode.link.send({ t: 'color', color });
   }
 
   setVisibility(pub: boolean) {
-    this.socket.send({ t: 'settings', public: pub });
+    this.mode.link.send({ t: 'settings', public: pub });
   }
 
   /** Dragging the points slider: show the value; the room takes it on release. */
@@ -411,7 +557,7 @@ export class Multiplayer {
   }
 
   setWinScore(v: number) {
-    this.socket.send({ t: 'settings', winScore: v });
+    this.mode.link.send({ t: 'settings', winScore: v });
   }
 
   /** Dragging the mallet slider: resize the preview at once; the room follows on release. */
@@ -422,31 +568,29 @@ export class Multiplayer {
   }
 
   setMalletScale(v: number) {
-    this.socket.send({ t: 'settings', malletScale: v });
+    this.mode.link.send({ t: 'settings', malletScale: v });
   }
 
   toggleReady() {
     const me = this.room?.members.find((x) => x.id === this.myId);
-    this.socket.send({ t: 'ready', on: !me?.ready });
+    this.mode.link.send({ t: 'ready', on: !me?.ready });
   }
 
   startGame() {
     setNote(ui.room.note, '');
-    this.socket.send({ t: 'start' });
+    this.mode.link.send({ t: 'start' });
   }
 
   leaveRoom() {
-    this.socket.send({ t: 'leave' });
+    this.mode.leave();
   }
 
   kick(id: string) {
-    this.socket.send({ t: 'kick', id });
+    this.mode.link.send({ t: 'kick', id });
   }
 
   copyLink() {
-    const url = new URL(location.href);
-    url.searchParams.delete('players');
-    if (this.room) url.searchParams.set('room', this.room.id);
+    const url = this.roomUrl(this.room?.id ?? null);
     void navigator.clipboard?.writeText(url.toString()).then(
       () => {
         ui.room.copyText = 'COPIED';
@@ -472,6 +616,12 @@ export class Multiplayer {
     const isHost = r.host === this.myId;
     const v = ui.room;
     v.id = r.id;
+    v.net =
+      this.mode.kind !== 'p2p'
+        ? ''
+        : this.mode.hosting
+          ? "P2P · You're the host: your device runs this game, so keep it open on screen"
+          : 'P2P · Connected straight to the host';
     v.members = r.members.map((m) => ({
       id: m.id,
       name: `${m.id === r.host ? '♛ ' : ''}${m.name}`,
@@ -535,7 +685,7 @@ export class Multiplayer {
 
   /** The result screen's RESTART (host only). */
   again() {
-    if (this.open && this.showingResult) this.socket.send({ t: 'restart' });
+    if (this.open && this.showingResult) this.mode.link.send({ t: 'restart' });
   }
 
   /** PAUSE TOO: hold the game too, so a resume by the others doesn't catch us off guard. */
@@ -545,18 +695,18 @@ export class Multiplayer {
 
   voteKick() {
     const target = this.pauses.find((p) => p.id !== this.myId && this.isKickable(p));
-    if (target) this.socket.send({ t: 'vote', id: target.id });
+    if (target) this.mode.link.send({ t: 'vote', id: target.id });
   }
 
   /** The player pressed Esc or left fullscreen: pause for everyone. */
   selfPause() {
     if (!this.active || this.selfPaused || this.showingResult) return;
     this.selfPaused = true;
-    this.socket.send({ t: 'pause' });
+    this.mode.link.send({ t: 'pause' });
     this.deps.input.enabled = false;
     this.deps.input.release();
     if (document.pointerLockElement) document.exitPointerLock();
-    this.deps.setScreen('menu');
+    this.setScreen('menu');
     this.renderPause();
   }
 
@@ -570,9 +720,9 @@ export class Multiplayer {
       /* play anyway */
     }
     this.selfPaused = false;
-    this.socket.send({ t: 'resume' });
+    this.mode.link.send({ t: 'resume' });
     this.deps.input.enabled = true;
-    this.deps.setScreen('game');
+    this.setScreen('game');
     this.deps.lockPointer();
     this.renderPause();
     this.updateHint();
@@ -650,4 +800,17 @@ export class Multiplayer {
       b.vote.disabled = kickable.votes.includes(this.myId);
     }
   }
+}
+
+function lobbyRow(r: LobbyRoom): LobbyRow {
+  return {
+    id: r.id,
+    host: r.host || 'Room',
+    sub: `${r.status === 'playing' ? 'PLAYING' : 'LOBBY'} · ${r.winScore} PTS · MALLET ${Math.round(r.malletScale * 100)}%`,
+    count: `${r.players}/${r.cap}`,
+    full: r.players >= r.cap,
+    text: '',
+    level: 'none',
+    ms: 0,
+  };
 }

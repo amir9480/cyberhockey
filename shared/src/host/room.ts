@@ -1,20 +1,12 @@
-import type { PlayerCount } from '@airhockey/shared/layout';
-import { MatchCore, type MatchEvent } from '@airhockey/shared/match';
-import {
-  type ClientMsg,
-  type LobbyRoom,
-  type MemberInfo,
-  type PauseEntry,
-  type SeatInfo,
-  type ServerMsg,
-} from '@airhockey/shared/protocol';
-import { DEFAULT_ROOM, PALETTE_SIZE, clampMalletScale, clampWinScore, type RoomSettings } from '@airhockey/shared/room';
-import type { Client } from './client';
-import type { ServerConfig } from './config';
-import type { Hub } from './hub';
-import { encodeHit, encodeState, encodeWall, type StateFrame } from '@airhockey/shared/binary';
-import { FREEZE_HELD, TICK, TICK_RATE } from '@airhockey/shared/net';
-import { MAX_MALLET_SPEED } from '@airhockey/shared/physics';
+import type { PlayerCount } from '../layout';
+import { MatchCore, type MatchEvent } from '../match';
+import { type ClientMsg, type LobbyRoom, type MemberInfo, type PauseEntry, type SeatInfo, type ServerMsg } from '../protocol';
+import { DEFAULT_ROOM, PALETTE_SIZE, clampMalletScale, clampWinScore, type RoomSettings } from '../room';
+import type { Conn, RoomOwner } from './conn';
+import type { RoomConfig } from './config';
+import { encodeHit, encodeState, encodeWall, type StateFrame } from '../binary';
+import { FREEZE_HELD, TICK, TICK_RATE } from '../net';
+import { MAX_MALLET_SPEED } from '../physics';
 
 const DT = TICK;
 const STATE_EVERY = 2; // ticks between state broadcasts (60 a second)
@@ -32,7 +24,7 @@ interface Member {
   online: boolean;
   /** Seat in the running game, or -1. */
   seat: number;
-  conn: Client | null;
+  conn: Conn | null;
   /** Timer that removes a dropped member who was not in the game. */
   grace: ReturnType<typeof setTimeout> | null;
 }
@@ -72,7 +64,8 @@ interface Game {
   countdown: number;
   events: Happened[];
   inputs: SeatInput[];
-  timer: ReturnType<typeof setInterval>;
+  /** Stops the game loop. */
+  stopLoop: () => void;
   /** Players currently holding the game paused, in order. */
   paused: Set<string>;
   budgets: Map<string, number>;
@@ -81,11 +74,24 @@ interface Game {
   seatBanned: Set<string>;
 }
 
+/** Runs `fn` every `ms`; returns what stops it. */
+export type Every = (fn: () => void, ms: number) => () => void;
+
+const plainEvery: Every = (fn, ms) => {
+  const id = setInterval(fn, ms);
+  return () => clearInterval(id);
+};
+
 export interface RoomOptions {
   public: boolean;
   quick: boolean;
   cap: number;
   settings: RoomSettings;
+  /**
+   * The host's own device runs the room (P2P): when the host leaves or drops, the room ends for everyone instead of
+   * passing to another player.
+   */
+  hostBound?: boolean;
 }
 
 const round1 = (v: number) => Math.round(v * 10) / 10;
@@ -97,6 +103,7 @@ export class Room {
   public: boolean;
   readonly quick: boolean;
   readonly cap: number;
+  readonly hostBound: boolean;
   settings: RoomSettings;
   hostId = '';
   status: 'lobby' | 'playing' = 'lobby';
@@ -109,11 +116,14 @@ export class Room {
 
   constructor(
     readonly id: string,
-    private hub: Hub,
-    private cfg: ServerConfig,
+    private owner: RoomOwner,
+    private cfg: RoomConfig,
     opts: RoomOptions,
+    /** Drives the game loop (a browser host passes timers that keep their pace in a hidden tab). */
+    private every: Every = plainEvery,
   ) {
     this.public = opts.public;
+    this.hostBound = !!opts.hostBound;
     this.quick = opts.quick;
     this.cap = opts.cap;
     this.settings = opts.settings;
@@ -134,7 +144,7 @@ export class Room {
     return n;
   }
 
-  join(client: Client) {
+  join(client: Conn) {
     let m = this.members.get(client.id);
     if (m) {
       if (m.conn && m.conn !== client) {
@@ -199,7 +209,7 @@ export class Room {
       m.conn.send({ t: 'left', reason });
       m.conn = null;
     }
-    if (this.members.size === 0 || (this.over && this.hostId === id)) {
+    if (this.members.size === 0 || ((this.over || this.hostBound) && this.hostId === id)) {
       this.close(this.members.size ? 'hostLeft' : 'closed');
       return;
     }
@@ -211,15 +221,19 @@ export class Room {
     } else this.changed();
   }
 
-  leave(client: Client) {
+  leave(client: Conn) {
     if (this.members.get(client.id)?.conn !== client) return;
     this.removeMember(client.id, 'left');
   }
 
   /** The websocket closed. */
-  drop(client: Client) {
+  drop(client: Conn) {
     const m = this.members.get(client.id);
     if (!m || m.conn !== client) return; // a stale connection
+    if (this.hostBound && m.id === this.hostId) {
+      this.removeMember(m.id, 'left');
+      return;
+    }
     client.room = null;
     m.conn = null;
     m.online = false;
@@ -237,7 +251,7 @@ export class Room {
     this.changed();
   }
 
-  rename(client: Client) {
+  rename(client: Conn) {
     const m = this.members.get(client.id);
     if (!m || m.conn !== client) return;
     m.name = client.name;
@@ -263,7 +277,7 @@ export class Room {
 
   // --- commands --------------------------------------------------------------
 
-  handle(client: Client, msg: ClientMsg) {
+  handle(client: Conn, msg: ClientMsg) {
     const m = this.members.get(client.id);
     if (!m || m.conn !== client) return; // stale connection
     const isHost = m.id === this.hostId;
@@ -369,7 +383,7 @@ export class Room {
       countdown: this.cfg.countdown,
       events,
       inputs: seated.map(newInput),
-      timer: setInterval(() => this.loop(), 1000 / TICK_RATE),
+      stopLoop: this.every(() => this.loop(), 1000 / TICK_RATE),
       paused: new Set(),
       budgets: new Map(),
       votes: new Map(),
@@ -534,7 +548,7 @@ export class Room {
   private endGame(reason: 'score' | 'forfeit', winner: number) {
     const g = this.game;
     if (!g) return;
-    clearInterval(g.timer);
+    g.stopLoop();
     this.game = null;
     this.status = 'lobby';
     this.over = true;
@@ -740,7 +754,7 @@ export class Room {
     if (this.closed) return;
     const json = JSON.stringify(this.roomMsg());
     for (const m of this.members.values()) m.conn?.send(json);
-    this.hub.roomChanged(this);
+    this.owner.roomChanged(this);
   }
 
   /** Public-list entry, or null when the room isn't listed. */
@@ -761,7 +775,7 @@ export class Room {
   close(reason: 'closed' | 'hostLeft' = 'closed') {
     if (this.closed) return;
     this.closed = true;
-    if (this.game) clearInterval(this.game.timer);
+    if (this.game) this.game.stopLoop();
     this.game = null;
     for (const m of this.members.values()) {
       if (m.grace) clearTimeout(m.grace);
@@ -771,7 +785,7 @@ export class Room {
       }
     }
     this.members.clear();
-    this.hub.roomClosed(this);
+    this.owner.roomClosed(this);
   }
 }
 

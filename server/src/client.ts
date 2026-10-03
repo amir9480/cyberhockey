@@ -1,17 +1,21 @@
+import { randomBytes } from 'node:crypto';
 import { WebSocket } from 'ws';
-import type { ServerMsg } from '@airhockey/shared/protocol';
-import type { Room } from './room';
+import type { Conn } from '@airhockey/shared/host/conn';
+import type { Room } from '@airhockey/shared/host/room';
+import type { ErrorCode, ServerMsg } from '@airhockey/shared/protocol';
 
 /** A client that lets this much data pile up unsent is dropped instead of stalling its room. */
 export const MAX_BUFFERED = 1_000_000;
 
 /** One websocket connection (one per browser tab). */
-export class Client {
+export class Client implements Conn {
   room: Room | null = null;
   lobby = false;
   lastSeen = Date.now();
   /** Round trip the client last reported, ms (0: unknown). */
   rtt = 0;
+  /** This connection (not player): what P2P signalling is addressed to. */
+  readonly sid = randomBytes(8).toString('hex');
 
   constructor(
     readonly ws: WebSocket,
@@ -30,7 +34,7 @@ export class Client {
     else this.ws.send(JSON.stringify(msg));
   }
 
-  error(code: Extract<ServerMsg, { t: 'error' }>['code'], msg: string) {
+  error(code: ErrorCode, msg: string) {
     this.send({ t: 'error', code, msg });
   }
 }

@@ -137,6 +137,31 @@
       .roomid code { flex: 1; padding: 11px 12px; border-radius: 10px; color: #fff; font-size: 15px; letter-spacing: 0.2em; background: rgba(10, 6, 24, 0.75); border: 1px solid rgba(160, 120, 255, 0.35); }
       .roomid .ghost { width: auto; padding: 11px 16px; }
       .slider[aria-disabled="true"] input { opacity: 0.5; }
+      /* Lobby: where rooms run (Finland server or P2P), with a ping and plain-language help for each. */
+      .tabs { display: flex; gap: 4px; padding: 4px; border-radius: 14px; background: rgba(10, 6, 24, 0.55); border: 1px solid rgba(160, 120, 255, 0.25); }
+      .tabs button {
+        all: unset; box-sizing: border-box; flex: 1 1 0; min-width: 0; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 5px;
+        padding: 10px 8px; border-radius: 10px; color: #9d8fd0; text-align: center; transition: color .2s, background .2s, box-shadow .2s;
+      }
+      .tabs button:hover { color: #fff; }
+      .tabs button:focus-visible { outline: 2px solid #6ff; outline-offset: 2px; }
+      .tabs button[aria-selected="true"] { color: #fff; background: rgba(140, 90, 255, 0.3); box-shadow: inset 0 0 0 1px rgba(0, 229, 255, 0.7), 0 0 16px rgba(0, 229, 255, 0.35); }
+      .tabs .sub { font-size: 10px; letter-spacing: 0.08em; color: #7d70a8; font-weight: 600; }
+      .tabs button[aria-selected="true"] .sub { color: #b9b0e0; }
+      .help { padding: 12px 14px; border-radius: 14px; background: rgba(10, 6, 24, 0.55); border: 1px solid rgba(160, 120, 255, 0.25); color: #c9c0ee; font-size: 12px; line-height: 1.5; letter-spacing: 0.03em; font-weight: 500; }
+      .help p { margin: 0; }
+      .help ul { margin: 8px 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
+      .help li::before { content: "✓ "; color: #39ff6a; font-weight: 700; }
+      .help .small { color: #7d70a8; font-size: 11px; }
+      .ping { white-space: nowrap; font-size: 11px; font-variant-numeric: tabular-nums; }
+      .ping::before { content: "● "; }
+      .ping.good { color: #39ff6a; }
+      .ping.ok { color: #ffb400; }
+      .ping.bad { color: #ff3b4e; }
+      .ping.testing { color: #7d70a8; }
+      .ping.testing::before { content: ""; }
+      .ping.fail { color: #ff9a5c; }
+      .ping.fail::before { content: "✕ "; }
 
       /* In-game HUD: scoreboard top left, FPS / ping top right beside the pause button. */
       #hud {
@@ -456,12 +481,38 @@
       <div class="menu">
         <h1 class="title">MULTI PLAYER</h1>
         <div class="group">
-          <div class="cap">PUBLIC ROOMS</div>
+          <div class="cap">HOW TO CONNECT</div>
+          <div class="tabs" role="tablist" aria-label="How to connect">
+            <button type="button" role="tab" :aria-selected="String(ui.lobby.tab === 'server')" @click="setNetKind('server')">
+              <span>FINLAND SERVER</span>
+              <span class="sub">PING <span class="ping" :class="ui.lobby.serverLevel" x-text="ui.lobby.serverPing"></span></span>
+            </button>
+            <button type="button" role="tab" :aria-selected="String(ui.lobby.tab === 'p2p')" @click="setNetKind('p2p')">
+              <span>DIRECT · P2P</span>
+              <span class="sub">DEVICE TO DEVICE</span>
+            </button>
+          </div>
+          <div class="help" x-show="ui.lobby.tab === 'server'">
+            <p>Everyone plays through our server in Finland. Works from anywhere; the lower the ping, the smoother the game.</p>
+          </div>
+          <div class="help" x-show="ui.lobby.tab === 'p2p'">
+            <p>Your device connects straight to your friends' devices, with no server in between. Usually smoother, especially if you're far from Finland.</p>
+            <ul>
+              <li>Works best when everyone is on the same Wi-Fi</li>
+              <li>Turn off your VPN</li>
+              <li>Hosting? Keep the game open on screen: your device runs the match</li>
+            </ul>
+            <p class="small">A room showing CAN'T CONNECT means your network blocks direct play. Use the Finland server instead.</p>
+          </div>
+        </div>
+        <div class="group">
+          <div class="cap" x-text="ui.lobby.tab === 'p2p' ? 'PUBLIC P2P ROOMS' : 'PUBLIC ROOMS'"></div>
           <div class="list">
-            <div class="empty" x-show="!ui.lobby.rooms.length">No public rooms yet. Create one!</div>
-            <template x-for="r in ui.lobby.rooms" :key="r.id">
+            <div class="empty" x-show="!(ui.lobby.tab === 'p2p' ? ui.lobby.p2pRooms : ui.lobby.rooms).length">No public rooms yet. Create one!</div>
+            <template x-for="r in (ui.lobby.tab === 'p2p' ? ui.lobby.p2pRooms : ui.lobby.rooms)" :key="r.id">
               <div class="row">
                 <div class="grow"><span x-text="r.host"></span><div class="dim" x-text="r.sub"></div></div>
+                <span class="ping" x-show="r.text" :class="r.level" x-text="r.text"></span>
                 <span class="dim" x-text="r.count"></span>
                 <button type="button" :disabled="r.full" @click="joinRoom(r.id)">JOIN</button>
               </div>
@@ -493,6 +544,7 @@
         <div class="group">
           <div class="cap">ROOM</div>
           <div class="roomid"><code x-text="ui.room.id"></code><button class="ghost" type="button" x-text="ui.room.copyText" @click="copyLink()"></button></div>
+          <div class="note" x-show="ui.room.net" x-text="ui.room.net"></div>
         </div>
         <div class="note" :class="{ warn: ui.room.status.warn }" x-text="ui.room.status.text"></div>
         <div class="group">

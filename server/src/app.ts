@@ -42,6 +42,7 @@ export function createGameServer(overrides: Partial<ServerConfig> = {}, auth: Au
       const { identity, token } = auth.identify(url.searchParams.get('token') ?? undefined);
       const client = new Client(ws, identity.id, cleanName(url.searchParams.get('name')));
       clients.add(client);
+      hub.connected(client);
       client.send({ t: 'hello', id: identity.id, token });
       ws.on('message', (data: RawData, isBinary: boolean) => {
         client.lastSeen = Date.now();
