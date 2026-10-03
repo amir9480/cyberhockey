@@ -1,10 +1,13 @@
 import { decodeClient } from '@airhockey/shared/binary';
+import { readFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { join } from 'node:path';
 import express from 'express';
 import { WebSocketServer, type RawData } from 'ws';
 import { MAX_FRAME_BYTES, cleanName, type ClientMsg } from '@airhockey/shared/protocol';
 import { GuestAuth, type AuthProvider } from './auth';
+import { BUILD_ID } from './build';
 import { Client } from './client';
 import { DEFAULT_CONFIG, type ServerConfig } from './config';
 import { Hub } from './hub';
@@ -26,7 +29,20 @@ export function createGameServer(overrides: Partial<ServerConfig> = {}, auth: Au
   app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok' });
   });
-  if (cfg.webDir) app.use(express.static(cfg.webDir)); // the built frontend, same in dev and production
+  if (cfg.webDir) {
+    // The page carries this run's build id, so it is never cached: a reload always gets the current one.
+    const indexFile = join(cfg.webDir, 'index.html');
+    app.get(['/', '/index.html'], async (_req, res, next) => {
+      let html: string;
+      try {
+        html = await readFile(indexFile, 'utf8');
+      } catch {
+        return next();
+      }
+      res.set('Cache-Control', 'no-cache').type('html').send(html.replace('<head>', `<head>\n    <meta name="build" content="${BUILD_ID}" />`));
+    });
+    app.use(express.static(cfg.webDir, { index: false })); // the built frontend, same in dev and production
+  }
 
   const http = createServer(app);
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES });
@@ -43,7 +59,7 @@ export function createGameServer(overrides: Partial<ServerConfig> = {}, auth: Au
       const client = new Client(ws, identity.id, cleanName(url.searchParams.get('name')));
       clients.add(client);
       hub.connected(client);
-      client.send({ t: 'hello', id: identity.id, token });
+      client.send({ t: 'hello', id: identity.id, token, build: BUILD_ID });
       ws.on('message', (data: RawData, isBinary: boolean) => {
         client.lastSeen = Date.now();
         let msg: ClientMsg | null;

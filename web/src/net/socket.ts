@@ -17,6 +17,25 @@ const lagOut = lagger();
 const lagIn = lagger();
 const BACKOFF = [300, 600, 1200, 2500, 5000];
 
+/** The server run this page came from (stamped in by the server; absent under the Vite dev server). */
+const PAGE_BUILD = document.querySelector<HTMLMetaElement>('meta[name="build"]')?.content;
+const RELOADED_KEY = 'airhockey.reloadedFor';
+
+/**
+ * True when the server has restarted (a deploy) since this page loaded, so the page should reload. Only once per
+ * server build, so a page served stale despite `no-cache` can't loop.
+ */
+function staleBuild(build: string | undefined): boolean {
+  if (!PAGE_BUILD || !build || build === PAGE_BUILD) return false;
+  try {
+    if (sessionStorage.getItem(RELOADED_KEY) === build) return false;
+    sessionStorage.setItem(RELOADED_KEY, build);
+  } catch {
+    return false;
+  }
+  return true;
+}
+
 /** One websocket to the server, reconnecting with backoff. Measures a smoothed round-trip time. */
 export class Socket extends BaseTransport {
   private ws: WebSocket | null = null;
@@ -49,6 +68,10 @@ export class Socket extends BaseTransport {
   }
 
   protected greeted(m: Extract<ServerMsg, { t: 'hello' }>) {
+    if (staleBuild(m.build)) {
+      location.reload();
+      return;
+    }
     adoptToken(m.token);
     this.tries = 0;
   }

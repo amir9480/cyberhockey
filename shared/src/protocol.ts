@@ -136,7 +136,8 @@ export interface PauseEntry {
 export type LeftReason = 'kicked' | 'closed' | 'replaced' | 'left' | 'hostLeft';
 
 export type ServerMsg =
-  | { t: 'hello'; id: string; token: string }
+  /** `build`: the server's run id (see the page's `<meta name="build">`); absent from P2P hosts. */
+  | { t: 'hello'; id: string; token: string; build?: string }
   | { t: 'pong'; c: number; st: number }
   | { t: 'error'; code: ErrorCode; msg: string }
   /** Public rooms: on this server, and P2P ones hosted by players. */
