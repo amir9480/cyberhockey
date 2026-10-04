@@ -3,13 +3,18 @@ import sparkVert from '../shaders/spark.vert?raw';
 import sparkFrag from '../shaders/spark.frag?raw';
 import type { Vec2 } from '@airhockey/shared/layout';
 
-/** Effect level: 0 = low (shader tweaks only), 1 = medium (+ sparks, backdrop, post), 2 = high (+ aberration, scanlines). */
+/** Effect level: 0 = low (shader tweaks only), 1 = medium (+ sparks, backdrop, post), 2 = high (+ scanlines). */
 export type FxLevel = 0 | 1 | 2;
 
 export const MAX_RIPPLES = 4;
 const MAX_SPARKS = 256;
 const SPARK_LIFE = 0.5; // seconds; the vertex shader uses the same value
 const BURST = [0, 12, 22]; // sparks per hit, by level
+// Hits and wall bounces share a spark budget that refills over time: a puck jammed between mallet and wall fires a
+// hit or bounce every few frames, and a full burst each time piled up into a flashing blob. One hard hit still gets
+// its full burst; a rapid string of them gets fewer and fewer sparks each.
+const SPARK_BUDGET = 1.2; // most impact sparks at once, in full bursts of the current level
+const SPARK_REFILL = 1.5; // full bursts' worth regained per second
 const KICK_DECAY = 6; // 1/s
 const SHAKE = 0.006; // screen fraction at full kick
 const HIT_RIPPLE = 0.2; // hit and wall ripples are this faint next to a goal's
@@ -52,6 +57,9 @@ export class CyberFx {
   private level: FxLevel = 2;
   private nextRipple = 0;
   private nextSpark = 0;
+  /** Impact sparks that may spawn right now, in full bursts (see SPARK_BUDGET). */
+  private sparkBudget = SPARK_BUDGET;
+  private budgetT = 0;
   private geo = new THREE.BufferGeometry();
   private mat: THREE.ShaderMaterial;
   private origin = new Float32Array(MAX_SPARKS * 3);
@@ -90,7 +98,19 @@ export class CyberFx {
     if (s < 0.05) return;
     this.ripple(p, color, (0.3 + s * 0.7) * HIT_RIPPLE);
     this.kick(s * 0.45);
-    this.burst(p, color, Math.round(BURST[this.level] * (0.4 + 0.6 * s)), 3 + s * 9);
+    this.burst(p, color, this.spend(Math.round(BURST[this.level] * (0.4 + 0.6 * s))), 3 + s * 9);
+  }
+
+  /** Take up to `count` impact sparks from the budget; how many may spawn. */
+  private spend(count: number): number {
+    const full = BURST[this.level];
+    if (!full) return 0;
+    const t = this.uniforms.uTime.value;
+    this.sparkBudget = Math.min(SPARK_BUDGET, this.sparkBudget + Math.max(0, t - this.budgetT) * SPARK_REFILL);
+    this.budgetT = t;
+    const n = Math.min(count, Math.floor(this.sparkBudget * full));
+    this.sparkBudget -= n / full;
+    return n;
   }
 
   /** A goal at `p`: a big ripple, a big kick and a shower of sparks. */

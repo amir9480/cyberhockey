@@ -36,5 +36,5 @@ void main() {
   vec3 body = vec3(0.025, 0.02, 0.05) + col * 0.05;
   vec3 c = body + col * (rim * 0.75 * scan + ring * 0.9 + ring2 * 0.7 + knob * 0.2 + 0.1) + fringe;
   if (uMirror > 0.5) c *= 0.35 * exp(vY * 0.9);
-  outColor = vec4(c, 1.0);
+  outColor = vec4(c, 0.0); // alpha 0: kept out of bloom (see View)
 }

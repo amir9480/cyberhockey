@@ -1,5 +1,5 @@
 import { View, DEFAULT_PITCH, MIN_PITCH, MAX_PITCH, DEFAULT_ZOOM, MIN_ZOOM, MAX_ZOOM, QUALITIES, type Quality } from './game/view';
-import { Input } from './game/input';
+import { INPUT_MODES, Input, type InputMode } from './game/input';
 import type { PlayerCount } from '@airhockey/shared/layout';
 import { DEFAULT_ROOM, clampMalletScale, clampWinScore } from '@airhockey/shared/room';
 import { DIFFICULTIES, type Difficulty } from '@airhockey/shared/ai';
@@ -75,13 +75,44 @@ addEventListener('keydown', (e) => {
 });
 
 // --- sensitivity (persisted) ------------------------------------------------
-const SENS_KEY = 'airhockey.sens';
+// A new key: the old `airhockey.sens` scaled screen pixels, this scales the table distance the pointer moved
+// (1 = the mallet moves exactly as far as the table under the finger did), so old values don't carry over.
+const SENS_KEY = 'airhockey.sensitivity';
+for (const old of ['airhockey.sens', 'airhockey.control']) {
+  try {
+    localStorage.removeItem(old);
+  } catch {
+    /* storage unavailable */
+  }
+}
 
 function setSens(v: number) {
   input.sensitivity = Math.min(SENS_MAX, Math.max(SENS_MIN, v));
   ui.settings.sens = input.sensitivity;
 }
 setSens(loadNumber(SENS_KEY, 1));
+
+// --- input mode (persisted): drag (default) or point --------------------------------
+// Not `airhockey.control`: that older key is cleared above.
+const MODE_KEY = 'airhockey.inputMode';
+
+function setInputMode(m: InputMode) {
+  input.mode = m;
+  ui.settings.inputMode = m;
+  // Point mode needs the cursor's real position, which pointer lock freezes.
+  if (m === 'point' && document.pointerLockElement) document.exitPointerLock();
+}
+const savedMode = load(MODE_KEY) as InputMode | null;
+setInputMode(savedMode && INPUT_MODES.includes(savedMode) ? savedMode : 'drag');
+
+/**
+ * Testing aid: `?cursor` shows the cursor and a ring on the table where its ray lands (touch, or a mouse without
+ * pointer lock, e.g. with `?debug`).
+ */
+if (new URLSearchParams(location.search).has('cursor')) {
+  input.showAim = true;
+  document.body.classList.add('show-cursor');
+}
 
 // --- camera angle (persisted) ------------------------------------------------
 const PITCH_KEY = 'airhockey.pitch';
@@ -136,15 +167,30 @@ function peek(on: boolean, el: EventTarget | null = null) {
   ui.peek = on;
 }
 
-// --- audio (persisted, both on by default) -----------------------------------
-const audioKeys = { music: 'airhockey.music', sfx: 'airhockey.sfx' } as const;
-
-function setAudio(kind: 'music' | 'sfx', on: boolean) {
-  if (kind === 'music') view.sound.setMusic(on);
-  else view.sound.setSfx(on);
-  ui.settings[kind] = on;
+// --- audio volumes, percent (persisted; music 5 and effects 100 by default) ----------------
+// New keys: values saved under the older ones (on/off switches, then a louder music default) start over.
+const volumeKeys = { music: 'cyberhockey.volume.music', sfx: 'cyberhockey.volume.sfx' } as const;
+const DEFAULT_VOLUME = { music: 5, sfx: 100 } as const;
+for (const old of ['airhockey.music', 'airhockey.sfx', 'airhockey.musicVolume', 'airhockey.sfxVolume']) {
+  try {
+    localStorage.removeItem(old);
+  } catch {
+    /* storage unavailable */
+  }
 }
-for (const kind of ['music', 'sfx'] as const) setAudio(kind, load(audioKeys[kind]) !== '0');
+
+function setVolume(kind: 'music' | 'sfx', percent: number) {
+  const v = Math.round(Math.min(100, Math.max(0, percent)));
+  if (kind === 'music') view.sound.setMusicVolume(v / 100);
+  else view.sound.setSfxVolume(v / 100);
+  ui.settings[kind] = v;
+  return v;
+}
+for (const kind of ['music', 'sfx'] as const) {
+  const saved = load(volumeKeys[kind]);
+  // 0 is a valid volume, so not `loadNumber`.
+  setVolume(kind, saved !== null && saved !== '' && Number.isFinite(Number(saved)) ? Number(saved) : DEFAULT_VOLUME[kind]);
+}
 
 // --- FPS / ping display (persisted, on by default) -------------------------------
 const HUD_KEY = 'airhockey.hud';
@@ -158,9 +204,14 @@ document.addEventListener('input', (e) => {
   if ((e.target as HTMLElement).matches('input[type="range"]')) view.sound.tick();
 });
 // Browsers only allow audio after a user gesture.
-const unlockAudio = () => view.sound.unlock();
-addEventListener('pointerdown', unlockAudio, { once: true });
-addEventListener('keydown', unlockAudio, { once: true });
+// Which events count as a gesture differs by browser and input (Safari and touch don't take pointerdown), so every
+// likely one tries, until the audio and music are actually running.
+const GESTURES = ['pointerdown', 'pointerup', 'touchend', 'click', 'keydown'] as const;
+const unlockAudio = () => {
+  view.sound.unlock();
+  if (view.sound.unlocked) for (const ev of GESTURES) removeEventListener(ev, unlockAudio, true);
+};
+for (const ev of GESTURES) addEventListener(ev, unlockAudio, true);
 
 // --- graphics quality (persisted; auto-detected on first run) ------------------
 const QUALITY_KEY = 'airhockey.quality';
@@ -251,7 +302,7 @@ function setPlaying(on: boolean) {
 }
 
 function lockPointer() {
-  if (document.pointerLockElement === canvas) return;
+  if (input.mode === 'point' || document.pointerLockElement === canvas) return;
   const plain = () => {
     try {
       (canvas.requestPointerLock() as unknown as Promise<void> | undefined)?.catch(() => {});
@@ -585,10 +636,8 @@ Alpine.data('app', () => ({
     ui.settings.name = ui.nameScreen.name = name;
     mp.rename(name);
   },
-  toggleAudio(kind: 'music' | 'sfx') {
-    const on = !ui.settings[kind];
-    setAudio(kind, on);
-    save(audioKeys[kind], on ? '1' : '0');
+  setVolume(kind: 'music' | 'sfx', v: string) {
+    save(volumeKeys[kind], setVolume(kind, Number(v)));
   },
   toggleHud() {
     ui.settings.hud = !ui.settings.hud;
@@ -607,6 +656,10 @@ Alpine.data('app', () => ({
   setSens(v: string) {
     setSens(Number(v));
     save(SENS_KEY, input.sensitivity);
+  },
+  setInputMode(m: InputMode) {
+    setInputMode(m);
+    save(MODE_KEY, m);
   },
 
   // In game: pause button, pause menu and result screen.

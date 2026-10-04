@@ -1,0 +1,2 @@
+web/public/musics/** filter=lfs diff=lfs merge=lfs -text
+web/public/sfx/** filter=lfs diff=lfs merge=lfs -text

@@ -1,7 +1,11 @@
 import * as THREE from 'three';
 
-/** Colours a player can pick from. Rivals take the ones left over. */
-export const PALETTE_HEX = [0x00e5ff, 0xff2bd6, 0xffb400, 0x39ff6a, 0x9d5cff, 0x3d7bff, 0xe8ff3a, 0xff6a3d];
+/**
+ * Colours a player can pick from. Rivals take the ones left over. Soft, part-desaturated hues (easy on the eyes
+ * against the dark table) that stay distinct from each other. The order is the hue each index has always had
+ * (cyan, pink, gold, green, violet, blue, lime, coral): saved picks and room colour indices keep their meaning.
+ */
+export const PALETTE_HEX = [0x38c8ec, 0xe85cc8, 0xf0b440, 0x4fd67a, 0x9a72ec, 0x4f86f0, 0xd2ea56, 0xf07450];
 const PALETTE = PALETTE_HEX.map((c) => new THREE.Color(c));
 
 /** Per-seat colours. Rebuild the table/mallets after changing them (they copy at creation). */

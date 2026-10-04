@@ -1,6 +1,8 @@
 html, body { margin: 0; height: 100%; background: #05030a; overflow: hidden; overscroll-behavior: none; }
 canvas#view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
 body.playing, body.playing canvas#view { cursor: none; }
+/* Testing aid (`?cursor`): keep the cursor visible while playing. */
+body.show-cursor.playing, body.show-cursor.playing canvas#view { cursor: crosshair; }
 
 /* Pause menu: a scrolling overlay with one centred column that adapts to any screen width. */
 .screen {
@@ -117,6 +119,8 @@ h1.title { margin: 0 0 4px; text-align: center; font-size: clamp(26px, 8vw, 40px
 .links a:focus-visible { outline: 2px solid #6ff; outline-offset: 3px; border-radius: 4px; }
 .links .follow { display: inline-flex; align-items: center; gap: 7px; color: #9d8fd0; }
 .links .sep { display: inline-flex; gap: 20px; }
+.links .credit { color: #5d5285; }
+.links .credit a { color: #9d8fd0; }
 .note { text-align: center; color: #7d70a8; font-size: 12px; line-height: 1.4; min-height: 1.4em; }
 .note.warn { color: #ff9a5c; }
 .list { display: flex; flex-direction: column; gap: 6px; max-height: 38vh; overflow-y: auto; padding: 4px; border-radius: 14px; background: rgba(10, 6, 24, 0.55); border: 1px solid rgba(160, 120, 255, 0.25); }

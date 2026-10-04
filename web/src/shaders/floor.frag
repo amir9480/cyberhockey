@@ -119,16 +119,22 @@ float hash12(vec2 p) {
   return fract((p3.x + p3.y) * p3.z);
 }
 
-// Dashes around a circle: `count` per turn, `duty` of each lit, turning at `spin` turns/s.
-float dashes(float ang, float count, float duty, float spin) {
+// Dashes around a circle: `count` per turn, `duty` of each lit, turning at `spin` turns/s; `fw`: dashes per pixel.
+float dashesW(float ang, float count, float duty, float spin, float fw) {
   float x = fract(ang / 6.2831853 + uTime * spin) * count;
   float f = abs(fract(x) - 0.5);
-  float fw = min(fwidth(x), 0.2); // the atan seam has a huge derivative: cap it
   return 1.0 - smoothstep(duty * 0.5 - fw, duty * 0.5 + fw, f);
+}
+
+float dashes(float ang, float count, float duty, float spin) {
+  float x = fract(ang / 6.2831853 + uTime * spin) * count;
+  return dashesW(ang, count, duty, spin, min(fwidth(x), 0.2)); // the atan seam has a huge derivative: cap it
 }
 
 void main() {
   vec2 p = vP;
+  // Table units per pixel here. Taken up front: derivatives are unreliable inside the per-seat branches below.
+  float px = max(fwidth(p.x), fwidth(p.y));
   float sd = sdPoly(p) - uR;
   float aa = max(fwidth(sd), 1e-4);
   float inside = 1.0 - smoothstep(-aa, aa, sd);
@@ -220,7 +226,8 @@ void main() {
   float rough = SPEC_ROUGH * (0.7 + 0.6 * plate);
   float fres = 0.65 + 0.35 * pow(1.0 - max(dot(N, V), 0.0), 5.0); // metal: reflective even head on
 
-  // Goals: crease arc + spotlight + reflected force field, tinted per seat.
+  // Goals: crease arc + spotlight + reflected force field, tinted per seat. Every pixel visits every seat, so each part
+  // is only worked out where it can light the pixel at all (with 4 players this loop was most of the frame on phones).
   for (int s = 0; s < MAX_N; s++) {
     if (s >= uSeats) break;
     vec2 q = p - uGC[s];
@@ -230,32 +237,41 @@ void main() {
     vec3 gc = mix(uGCol[s], uWinColor, uWinAmt); // every seat's lights take the winner's colour
     if (s == uLoseSeat) gc = mix(uGCol[s], uLoseColor, uLoseAmt); // local player lost: red
     float ql = length(q);
-    float arc = lineMask(abs(ql - uCreaseR), 0.04, aa * 1.5) * step(0.0, depth);
-    // Dashed outer arc, and chevrons streaming into the goal; both brighten as the puck closes in.
-    float danger = uPuck.z * exp(-dot(uPuck.xy - uGC[s], uPuck.xy - uGC[s]) / (uCreaseR * uCreaseR * 2.0));
-    float qa = atan(dot(q, t), depth);
-    arc += lineMask(abs(ql - uCreaseR - 0.3), 0.02, aa * 1.5) * step(0.0, depth) * dashes(qa, 40.0, 0.5, 0.0) * 0.6;
     float lateral = abs(dot(q, t));
-    float chevV = depth - lateral * 0.7;
-    float chev = abs(fract(chevV * 1.1 + uTime * 1.2) - 0.5);
-    float chevBand = (1.0 - smoothstep(0.4, 0.6, lateral)) * smoothstep(0.3, 0.6, depth) * (1.0 - smoothstep(1.2, 1.6, depth));
-    arc += lineMask(chev, 0.04, aa * 2.0) * chevBand * (0.12 + danger * 1.5);
-    arc *= 1.0 + danger * 1.2;
+    float arc = 0.0;
+    // The arcs reach no further than the dashed ring, the chevrons no further than 1.6 deep and 0.6 to the side.
+    if (depth >= 0.0 && (ql < uCreaseR + 0.34 + aa * 3.0 || (lateral < 0.6 && depth < 1.6))) {
+      float danger = uPuck.z * exp(-dot(uPuck.xy - uGC[s], uPuck.xy - uGC[s]) / (uCreaseR * uCreaseR * 2.0));
+      arc = lineMask(abs(ql - uCreaseR), 0.04, aa * 1.5);
+      // Dashed outer arc, and chevrons streaming into the goal; both brighten as the puck closes in.
+      float qa = atan(dot(q, t), depth);
+      float qfw = min(px / max(ql, 1e-3) * 40.0 / 6.2831853, 0.2); // dashes per pixel (40 per turn)
+      arc += lineMask(abs(ql - uCreaseR - 0.3), 0.02, aa * 1.5) * dashesW(qa, 40.0, 0.5, 0.0, qfw) * 0.6;
+      float chevV = depth - lateral * 0.7;
+      float chev = abs(fract(chevV * 1.1 + uTime * 1.2) - 0.5);
+      float chevBand = (1.0 - smoothstep(0.4, 0.6, lateral)) * smoothstep(0.3, 0.6, depth) * (1.0 - smoothstep(1.2, 1.6, depth));
+      arc += lineMask(chev, 0.04, aa * 2.0) * chevBand * (0.12 + danger * 1.5);
+      arc *= 1.0 + danger * 1.2;
+    }
 
-    // Spot light: a hidden point behind the goal line shines through the goal mouth.
-    vec2 L = uGC[s] - n * uLH;
-    vec2 ld = p - L;
-    float dp = dot(ld, n);
-    float lat = dot(ld, t) * uLH / max(dp, 1e-3); // where the ray crosses the goal line
-    float aperture = 1.0 - smoothstep(uGW * 0.5 - 1.4, uGW * 0.5, abs(lat));
-    float llen = length(ld);
-    float beam = aperture * smoothstep(uLH, uLH + 0.3, dp) * (0.5 + 0.5 * dp / llen);
-    // Stay inside this seat's own zone and range so lights never overlap.
-    float zone = smoothstep(0.0, 1.5, dot(uZN[s * 2], p)) * smoothstep(0.0, 1.5, dot(uZN[s * 2 + 1], p));
-    // Circular pool centred on the goal; eases out smoothly so the edge is barely visible.
-    float k = clamp(length(q) / uLRange, 0.0, 1.0);
-    float range = (1.0 - k) * (1.0 - k) * (1.0 - k);
-    beam *= zone * range * shadowAt(L, p);
+    // Spot light: a hidden point behind the goal line shines through the goal mouth; a circular pool centred on the
+    // goal (easing out so the edge is barely visible), only inside this seat's own zone so lights never overlap.
+    float beam = 0.0;
+    float k = ql / uLRange;
+    if (k < 1.0) {
+      vec2 L = uGC[s] - n * uLH;
+      vec2 ld = p - L;
+      float dp = dot(ld, n);
+      float lat = dot(ld, t) * uLH / max(dp, 1e-3); // where the ray crosses the goal line
+      float aperture = 1.0 - smoothstep(uGW * 0.5 - 1.4, uGW * 0.5, abs(lat));
+      float llen = length(ld);
+      beam = aperture * smoothstep(uLH, uLH + 0.3, dp) * (0.5 + 0.5 * dp / llen);
+      float zone = smoothstep(0.0, 1.5, dot(uZN[s * 2], p)) * smoothstep(0.0, 1.5, dot(uZN[s * 2 + 1], p));
+      float range = (1.0 - k) * (1.0 - k) * (1.0 - k);
+      beam *= zone * range;
+      // Shadows loop over every mallet and the puck: only where the beam lights the pixel.
+      if (beam > 1e-4) beam *= shadowAt(L, p);
+    }
     float flash = (s == uWinSeat) ? uFlash : 0.0; // the scorer's spotlight flashes
     col += gc * (arc * 0.45 * (1.0 + flash * 3.0) + beam * BEAM_STRENGTH * (1.0 + flash * 7.0));
     col += vec3(flash * beam * 0.5);
@@ -265,12 +281,14 @@ void main() {
     // times distance blurs it: the scan lines smear into their average, the edges soften.
     float toward = -dot(R.xz, n);
     float back = dot(p - uGF[s], n); // distance from the field's plane, inside the table
-    if (toward > 1e-3 && back > 0.0) {
-      float dist = back / toward;
-      vec3 H = P + R * dist;
-      float u = dot(H.xz - uGF[s], uGT[s]) / uGW + 0.5;
+    float dist = toward > 1e-3 ? back / toward : 0.0;
+    vec3 H = P + R * dist;
+    float u = dot(H.xz - uGF[s], uGT[s]) / uGW + 0.5;
+    float bu = rough * dist / uGW + 1e-3; // blur, in field uv
+    float wu = bu * 6.0 + 0.1; // the sheen's reach past the field's sides (the widest term)
+    // Rays that pass the field (plus its blur and sheen) wide of either side reflect nothing.
+    if (toward > 1e-3 && back > 0.0 && u > -wu && u < 1.0 + wu) {
       float v = H.y / uFieldH;
-      float bu = rough * dist / uGW + 1e-3; // blur, in field uv
       float bv = rough * dist / uFieldH + 1e-3;
       // goal.frag's field, with each term blurred by bu/bv.
       vec3 fc = mix(uGCol[s], uWinColor, uWinAmt);
@@ -285,7 +303,6 @@ void main() {
         * smoothstep(-bv, bv, v);
       float field = (0.12 + lines * 0.35 * shimmer + near * 0.6 + uKick * 0.3) * fade;
       // Wide faint sheen around it, so rough plates still catch some of the field's light.
-      float wu = bu * 6.0 + 0.1;
       float wv = bv * 6.0 + 0.1;
       float sheen = smoothstep(-wu, wu, u) * (1.0 - smoothstep(1.0 - wu, 1.0 + wu, u)) * smoothstep(-wv, wv, v) * exp(-max(v, 0.0) * 2.0);
       float glint = (field + sheen * SHEEN * (0.2 + near * 0.6 + uKick * 0.3)) * fres / (1.0 + dist * 0.12);

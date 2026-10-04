@@ -1,20 +1,33 @@
+import type { Vec2 } from '@airhockey/shared/layout';
 import type { View } from './view';
 
 /**
- * Mouse: while `mouseActive` (fullscreen play), with pointer lock the cursor deltas (scaled by
- * `sensitivity`) drive the mallet; without it the absolute cursor position does.
- * Touch (touch events): dragging anywhere moves the mallet by the finger's movement, so it never jumps
- * under the finger and a plain tap does nothing.
+ * How the pointer drives the mallet:
+ * - `drag` (default): it moves the same way, and as far (times `sensitivity`), as the table surface under the finger /
+ *   cursor moved. Both ends of each move are cast onto the table and the mallet's goal shifts by the difference, so it
+ *   never jumps to the pointer and a plain tap does nothing. A locked mouse has no screen position, so its moves are
+ *   cast at the mallet's own spot on screen; without the lock (e.g. `?debug`), where the cursor is.
+ * - `point`: the mallet heads for the table point under the finger / cursor (nearest spot in its zone), touching
+ *   included. Needs the cursor's real position: no pointer lock.
+ * Mouse: only while `mouseActive` (fullscreen play). Touch: touch events.
  */
+export type InputMode = 'drag' | 'point';
+export const INPUT_MODES: readonly InputMode[] = ['drag', 'point'];
+
 export class Input {
   /** False while the pause menu is up. */
   enabled = true;
   /** Mouse drives the mallet only in fullscreen play. */
   mouseActive = false;
-  /** Pointer speed multiplier (mouse and touch). */
+  mode: InputMode = 'drag';
+  /** `drag` mode: multiplies how far the mallet moves for a pointer move (1 = as far as the table under the pointer moved). */
   sensitivity = 1;
+  /** Testing aid (`?cursor`): mark on the table where the pointer's ray lands. */
+  showAim = false;
   private touchId: number | null = null;
   private last = { x: 0, y: 0 };
+  /** Unlocked mouse: the cursor's last position, or null until it moves. */
+  private lastMouse: Vec2 | null = null;
 
   constructor(
     private view: View,
@@ -30,14 +43,27 @@ export class Input {
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
   }
 
-  /** Move the mallet's goal by a screen-space delta, so a pinned pointer can never stop it. */
-  private nudge(dx: number, dy: number) {
+  /**
+   * The pointer moved from screen point `a` to `b`: shift the mallet's goal by how far the table point under it moved,
+   * times `sensitivity`. The goal (not the eased position, so fast motion isn't lost to lag) is clamped to the zone
+   * each time, so pushing past an edge and coming back has no dead zone.
+   */
+  private drag(a: Vec2, b: Vec2, mark: boolean) {
     const mallet = this.view.mallet;
-    if (!mallet) return;
-    // Base on the target, not the eased position, so fast motion isn't lost to lag.
-    const s = this.view.tableToScreen(mallet.goal, 0);
-    const p = this.view.screenToTable(s.x + dx * this.sensitivity, s.y + dy * this.sensitivity);
-    if (p) mallet.moveTo(p);
+    const p = this.view.screenToTable(a.x, a.y);
+    const q = this.view.screenToTable(b.x, b.y);
+    if (mark && this.showAim) this.view.setAimMarker(q);
+    if (!mallet || !p || !q) return;
+    const g = mallet.goal;
+    const k = this.sensitivity;
+    mallet.moveTo({ x: g.x + (q.x - p.x) * k, y: g.y + (q.y - p.y) * k });
+  }
+
+  /** `point` mode: the mallet heads for the table point under screen point (x, y); a ray off the table is ignored. */
+  private point(x: number, y: number) {
+    const p = this.view.screenToTable(x, y);
+    if (this.showAim) this.view.setAimMarker(p);
+    if (p) this.view.mallet?.moveTo(p);
   }
 
   private touchStart = (e: TouchEvent) => {
@@ -48,6 +74,7 @@ export class Input {
     const t = e.changedTouches[0];
     this.touchId = t.identifier;
     this.last = { x: t.clientX, y: t.clientY };
+    if (this.mode === 'point') this.point(t.clientX, t.clientY);
   };
 
   private touchMove = (e: TouchEvent) => {
@@ -56,8 +83,10 @@ export class Input {
     if (!this.enabled) return;
     for (const t of Array.from(e.changedTouches)) {
       if (t.identifier !== this.touchId) continue;
-      this.nudge(t.clientX - this.last.x, t.clientY - this.last.y);
-      this.last = { x: t.clientX, y: t.clientY };
+      const now = { x: t.clientX, y: t.clientY };
+      if (this.mode === 'point') this.point(now.x, now.y);
+      else this.drag(this.last, now, true);
+      this.last = now;
     }
   };
 
@@ -68,17 +97,22 @@ export class Input {
   private mouseMove = (e: PointerEvent) => {
     const mallet = this.view.mallet;
     if (e.pointerType !== 'mouse' || !mallet || !this.enabled || !this.mouseActive) return;
-    if (document.pointerLockElement === this.canvas) {
-      this.nudge(e.movementX, e.movementY);
+    if (this.mode === 'point') {
+      this.point(e.clientX, e.clientY);
+    } else if (document.pointerLockElement === this.canvas) {
+      const s = this.view.tableToScreen(mallet.goal, 0);
+      this.drag(s, { x: s.x + e.movementX, y: s.y + e.movementY }, false);
     } else {
-      // No pointer lock: follow the cursor's absolute position (reaches the whole table).
-      const p = this.view.screenToTable(e.clientX, e.clientY);
-      if (p) mallet.moveTo(p);
+      const now = { x: e.clientX, y: e.clientY };
+      if (this.lastMouse) this.drag(this.lastMouse, now, true);
+      this.lastMouse = now;
     }
   };
 
   /** Drop any held touch (e.g. when pausing). */
   release() {
     this.touchId = null;
+    this.lastMouse = null;
+    if (this.showAim) this.view.setAimMarker(null);
   }
 }

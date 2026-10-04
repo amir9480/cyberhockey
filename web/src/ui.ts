@@ -2,6 +2,7 @@ import Alpine from 'alpinejs';
 import type { PlayerCount } from '@airhockey/shared/layout';
 import type { Difficulty } from '@airhockey/shared/ai';
 import { PALETTE_HEX } from './game/colors';
+import type { InputMode } from './game/input';
 
 /**
  * All menu, HUD and overlay state, rendered by Alpine from the bindings in index.html. Game code writes here and
@@ -113,13 +114,15 @@ export const ui = Alpine.reactive({
     from: 'home' as Screen,
     name: '',
     note: note(),
-    music: true,
-    sfx: true,
+    /** Volumes, percent. */
+    music: 20,
+    sfx: 100,
     hud: true,
     quality: 'high',
     pitch: 50,
     zoom: 100,
     sens: 1,
+    inputMode: 'drag' as InputMode,
   },
 
   hud: { stats: '', target: 10, rows: [] as HudRow[] },

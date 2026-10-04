@@ -30,7 +30,7 @@ export type Quality = 'low' | 'medium' | 'high';
 export const QUALITIES: Quality[] = ['low', 'medium', 'high'];
 /**
  * Per level: max device pixel ratio, bloom resolution scale (0 = pass off), light shadows, and the effect level
- * (low: shader-only touches; medium: + sparks, backdrop, vignette/grain/shake; high: + aberration, scanlines).
+ * (low: shader-only touches; medium: + sparks, backdrop, vignette/grain/shake; high: + scanlines).
  */
 const QUALITY: Record<Quality, { dpr: number; bloom: number; shadows: boolean; fx: FxLevel }> = {
   low: { dpr: 1.5, bloom: 0, shadows: false, fx: 0 },
@@ -48,8 +48,12 @@ void main() {
 export const DEFAULT_PITCH = 50;
 export const MIN_PITCH = 15;
 export const MAX_PITCH = 89; // not 90: looking exactly down makes lookAt degenerate
-/** Camera zoom, percent of the distance that just fits the table: above 100 is closer, below is further. */
+/**
+ * Camera zoom in percent: above 100 is closer, below is further. 100% is ZOOM_BASE times closer than the distance
+ * that just fits the table (fitting it exactly left the table small).
+ */
 export const DEFAULT_ZOOM = 100;
+const ZOOM_BASE = 1.2;
 export const MIN_ZOOM = 60;
 export const MAX_ZOOM = 160;
 
@@ -59,12 +63,19 @@ const CINE_PITCH = THREE.MathUtils.degToRad(22);
 const CINE_ZOOM = 0.85; // closer than the fitted distance
 const CINE_DRIFT = THREE.MathUtils.degToRad(5); // very slow orbit while lingering, per second
 const CINE_SWING = 0.1; // seconds the whip to the next seat takes
+// Screens narrower than this (phones upright) don't fit the whole table's width in the cinematic, which put the camera
+// far away: only the seat in focus (its mallet and name card) must be on screen, the table may run off the sides.
+const CINE_ASPECT = 16 / 9;
+const CINE_BACK = 1.3; // narrow screens: this much further than the closest the table's height allows
+const CINE_AIM_SHARP = 6; // how sharply the camera's aim settles on the seat it is behind (higher = snappier)
 
 /** Where the camera looks from: horizontal direction from the table centre, tilt, and distance relative to the fit. */
 interface Shot {
   dir: Vec2;
   pitch: number;
   zoom: number;
+  /** Cinematic: 1 = frame the seat the camera is behind (see `fit`), 0 = the whole table; blends between. */
+  focus?: number;
 }
 
 export class View {
@@ -101,6 +112,8 @@ export class View {
   private camDir: Vec2 = { x: 0, y: 1 };
   /** Called every frame before rendering (the online driver predicts and places things here). */
   onFrame: ((dt: number, now: number) => void) | null = null;
+  /** Testing aid: a ring on the table where the pointer aims (`setAimMarker`). */
+  private aimMarker: THREE.Mesh | null = null;
   /** Rendered frames per second, refreshed twice a second. */
   fps = 0;
   onFps: ((fps: number) => void) | null = null;
@@ -140,6 +153,13 @@ export class View {
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
     this.bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.25, 0.2, 0.45);
+    // Bloom mask in the scene render's alpha, scaling how much of each pixel blooms: the puck and mallets write 0
+    // (their small, fast, thin bright details made a flickery, noisy glow, worst on phones), the rails 0.35 (a third
+    // of the glow, same spread), everything else 1. Free: no extra render.
+    const highPass = this.bloom.materialHighPassFilter;
+    const glow = 'float alpha = smoothstep( luminosityThreshold, luminosityThreshold + smoothWidth, v );';
+    if (!highPass.fragmentShader.includes(glow)) console.warn('bloom mask: three.js high pass shader changed');
+    highPass.fragmentShader = highPass.fragmentShader.replace(glow, `${glow}\n\t\t\talpha *= texel.a;`);
     this.composer.addPass(this.bloom);
     this.output = new OutputPass();
     this.composer.addPass(this.output);
@@ -152,7 +172,6 @@ export class View {
           tDiffuse: { value: null },
           uTime: this.cyber.uniforms.uTime,
           uFx: this.cyber.uniforms.uFx,
-          uKick: this.cyber.uniforms.uKick,
           uShake: { value: this.cyber.shake },
         },
       }),
@@ -313,7 +332,7 @@ export class View {
 
   /** Camera zoom in percent (see DEFAULT_ZOOM). */
   setZoom(percent: number) {
-    this.dist = 100 / Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, percent));
+    this.dist = 100 / (ZOOM_BASE * Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, percent)));
     this.fitCamera();
   }
 
@@ -359,15 +378,21 @@ export class View {
     if (!this.cine) this.fit(this.camera, this.playerShot);
   }
 
-  private static place(cam: THREE.PerspectiveCamera, shot: Shot, dist: number) {
+  /** Place `cam` `dist` away from table point `at`, along the shot's direction and tilt, looking at it. */
+  private static place(cam: THREE.PerspectiveCamera, shot: Shot, dist: number, at: Vec2 = { x: 0, y: 0 }) {
     const y = Math.sin(shot.pitch) * dist;
     const z = Math.cos(shot.pitch) * dist;
-    cam.position.set(shot.dir.x * z, y, shot.dir.y * z);
-    cam.lookAt(0, 0, 0);
+    cam.position.set(at.x + shot.dir.x * z, y, at.y + shot.dir.y * z);
+    cam.lookAt(at.x, 0, at.y);
     cam.updateMatrixWorld();
   }
 
-  /** Put `cam` at `shot`, at the smallest distance that keeps the whole table (with margin) on screen, times its zoom. */
+  /**
+   * Put `cam` at `shot`, at the smallest distance that keeps the whole table (with margin) on screen, times its zoom.
+   * A cinematic shot (`focus`) on a narrow screen instead looks at the mallet of the seat it is behind and may come
+   * closer: only the table's height must fit (then backed off by CINE_BACK), and that mallet and its name card must be
+   * on screen.
+   */
   private fit(cam: THREE.PerspectiveCamera, shot: Shot) {
     if (!this.table) return;
     const poly: Vec2[] = this.table.layout.polygon;
@@ -402,20 +427,97 @@ export class View {
       return { maxX, minY, maxY };
     };
 
-    let lo = 5;
-    let hi = 250;
-    for (let i = 0; i < 24; i++) {
-      const mid = (lo + hi) / 2;
-      View.place(cam, shot, mid);
+    /** The smallest camera distance at which `ok` holds (checked with the camera placed there). */
+    const search = (ok: () => boolean) => {
+      let lo = 5;
+      let hi = 250;
+      for (let i = 0; i < 24; i++) {
+        const mid = (lo + hi) / 2;
+        View.place(cam, shot, mid, at);
+        if (ok()) hi = mid;
+        else lo = mid;
+      }
+      return hi;
+    };
+    const tableFits = (mx: number) => () => {
       const b = bounds();
-      if (b.maxX <= marginX && b.maxY - b.minY <= top - bottom) hi = mid;
-      else lo = mid;
+      return b.maxX <= mx && b.maxY - b.minY <= top - bottom;
+    };
+    const narrow = CINE_ASPECT / (w / h);
+    const focus = narrow > 1 ? (shot.focus ?? 0) : 0;
+    const aim = focus > 0 ? this.focusAim(shot.dir) : null;
+    const f = aim ? focus : 0;
+    // Look at the focused mallet (blending back to the table centre as the focus fades).
+    const at = aim ? { x: aim.at.x * f, y: aim.at.y * f } : { x: 0, y: 0 };
+    /** How far `fit` moves the view up (NDC) to centre the table vertically; not while looking at a mallet. */
+    const shiftNow = () => {
+      const b = bounds();
+      return ((top + bottom) / 2 - (b.minY + b.maxY) / 2) * (1 - f);
+    };
+    let dist = search(tableFits(marginX)) * shot.zoom;
+    if (aim) {
+      const near = Math.max(
+        search(tableFits(marginX * narrow)) * shot.zoom * CINE_BACK,
+        search(this.focusSeen(cam, aim.mallet, shiftNow, top)),
+      );
+      dist += (Math.min(near, dist) - dist) * f;
     }
-    View.place(cam, shot, hi * shot.zoom);
+    View.place(cam, shot, dist, at);
 
-    const b = bounds();
-    const shift = (top + bottom) / 2 - (b.minY + b.maxY) / 2; // NDC units, + = move up
+    const shift = shiftNow(); // NDC units, + = move up
     if (Math.abs(shift) > 1e-4) cam.setViewOffset(w, h, 0, (shift * h) / 2, w, h);
+  }
+
+  /**
+   * For `fit`: the mallet of the seat the camera looks from behind (`dir`), and where to aim: mostly that mallet, but
+   * blended smoothly over the seats by how squarely the camera is behind each, so a whip between seats pans across
+   * instead of snapping. Null without mallets.
+   */
+  private focusAim(dir: Vec2): { mallet: Mallet; at: Vec2 } | null {
+    let mallet: Mallet | null = null;
+    let best = -Infinity;
+    let sum = 0;
+    const at = { x: 0, y: 0 };
+    for (const s of this.table!.layout.seats) {
+      const m = this.mallets.find((x) => x.seat === s.index);
+      if (!m) continue;
+      const d = -(dir.x * s.inward.x + dir.y * s.inward.y);
+      if (d > best) [best, mallet] = [d, m];
+      const wgt = Math.exp(CINE_AIM_SHARP * d);
+      at.x += m.shown.x * wgt;
+      at.y += m.shown.y * wgt;
+      sum += wgt;
+    }
+    if (!mallet) return null;
+    return { mallet, at: { x: at.x / sum, y: at.y / sum } };
+  }
+
+  /** For `fit`: a check that mallet `m` and its name card above it are on screen (below the HUD), after `shift`. */
+  private focusSeen(cam: THREE.PerspectiveCamera, m: Mallet, shift: () => number, top: number) {
+    const p = m.shown;
+    const r = m.radius;
+    const body: THREE.Vector3[] = [];
+    for (const y of [0, r]) {
+      body.push(new THREE.Vector3(p.x + r, y, p.y), new THREE.Vector3(p.x - r, y, p.y));
+      body.push(new THREE.Vector3(p.x, y, p.y + r), new THREE.Vector3(p.x, y, p.y - r));
+    }
+    // The name card (#seatNames, style.css): centred over the anchor `nameAnchors` gives, standing on it.
+    const font = Math.min(18, Math.max(12, innerWidth * 0.024));
+    const cardW = (2 * Math.min(innerWidth * 0.2, 9 * font + 12)) / innerWidth; // half width, NDC
+    const cardH = (2 * (font * 1.6 + 2)) / innerHeight;
+    const anchor = new THREE.Vector3(p.x, r * 1.8, p.y);
+    const edge = 0.94;
+    const v = new THREE.Vector3();
+    return () => {
+      const up = shift();
+      const inside = (x: number, y: number) => Math.abs(x) <= edge && y + up >= -edge && y + up <= top;
+      for (const q of body) {
+        v.copy(q).project(cam);
+        if (v.z > 1 || !inside(v.x, v.y)) return false;
+      }
+      v.copy(anchor).project(cam);
+      return v.z <= 1 && inside(v.x - cardW, v.y + cardH) && inside(v.x + cardW, v.y + cardH);
+    };
   }
 
   /**
@@ -468,10 +570,11 @@ export class View {
     // Angle past the player's while lingering at stop j (j === m: the player's own seat, a full turn on).
     const at = (j: number, t: number) =>
       j === m ? tau : opp[j] + CINE_DRIFT * (t - (startOf(j) + endOf(j)) / 2);
-    const shot = (a: number, pitch: number, zoom: number): Shot => ({
+    const shot = (a: number, pitch: number, zoom: number, focus = 1): Shot => ({
       dir: { x: Math.cos(own + a), y: Math.sin(own + a) },
       pitch,
       zoom,
+      focus,
     });
 
     let j = 0;
@@ -488,6 +591,7 @@ export class View {
         from + (to - from) * k,
         CINE_PITCH + (this.pitch - CINE_PITCH) * home,
         CINE_ZOOM + (this.dist - CINE_ZOOM) * home,
+        1 - home,
       );
     }
     return j === m ? this.playerShot : shot(at(j, e), CINE_PITCH, CINE_ZOOM);
@@ -527,6 +631,23 @@ export class View {
     this.ray.setFromCamera(ndc, this.aim);
     const hit = this.ray.ray.intersectPlane(this.plane, new THREE.Vector3());
     return hit ? { x: hit.x, y: hit.z } : null;
+  }
+
+  /** Show a ring on the table at `p` (null hides it): where the pointer's ray lands, for testing aim control. */
+  setAimMarker(p: Vec2 | null) {
+    if (!p) {
+      if (this.aimMarker) this.aimMarker.visible = false;
+      return;
+    }
+    if (!this.aimMarker) {
+      const geo = new THREE.RingGeometry(0.22, 0.32, 32).rotateX(-Math.PI / 2);
+      const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false, transparent: true, fog: false });
+      this.aimMarker = new THREE.Mesh(geo, mat);
+      this.aimMarker.renderOrder = 10;
+      this.scene.add(this.aimMarker);
+    }
+    this.aimMarker.position.set(p.x, 0.02, p.y);
+    this.aimMarker.visible = true;
   }
 
   /** Table point to screen px (client coords), as the player sees it. */
