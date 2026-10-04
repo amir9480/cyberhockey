@@ -451,6 +451,19 @@ export class Multiplayer {
 
   private onLeft(reason: LeftReason) {
     if (!this.open) return;
+    // The match is over and its results are up: the host leaving ends the room, not this player's view of the
+    // results. They stay, saying so (nothing to restart now), until the player leaves.
+    if (reason === 'hostLeft' && this.showingResult) {
+      this.mode.leave(); // P2P: hang up on the host
+      this.room = null;
+      this.wantedRoom = null;
+      this.setRoom(null);
+      const r = ui.result;
+      r.showAgain = false;
+      r.wait = 'THE HOST LEFT';
+      r.quitText = 'LEAVE';
+      return;
+    }
     gameEnded(reason === 'hostLeft' ? 'host_left' : reason);
     this.mode.leave(); // P2P: hang up on the host
     this.endGameUi();

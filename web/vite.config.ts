@@ -11,8 +11,9 @@ if (crazyGames && !process.env.VITE_APP_URL && !process.env.APP_URL) process.env
 // index.html builds absolute OG/canonical URLs from %VITE_APP_URL% (APP_URL, the same setting the server reads, unless
 // overridden); drop a trailing slash and fall back to local dev.
 process.env.VITE_APP_URL = (process.env.VITE_APP_URL || process.env.APP_URL || 'http://localhost:3000').replace(/\/+$/, '');
-// PostHog analytics (src/analytics.ts): off unless the build has a project key.
-process.env.VITE_POSTHOG_KEY ||= process.env.POSTHOG_KEY ?? '';
+// PostHog analytics (src/analytics.ts): off unless the build has a project key. Never in the CrazyGames build: it
+// collects no data of its own there (CrazyGames reports the game's numbers), so PostHog is left out of the bundle.
+process.env.VITE_POSTHOG_KEY = crazyGames ? '' : process.env.VITE_POSTHOG_KEY || process.env.POSTHOG_KEY || '';
 process.env.VITE_POSTHOG_HOST ||= process.env.POSTHOG_HOST ?? '';
 
 /**
