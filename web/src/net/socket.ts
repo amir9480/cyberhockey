@@ -1,4 +1,5 @@
 import { CLOSE_IDLE, type ServerMsg } from '@airhockey/shared/protocol';
+import { platform } from '../platform';
 import { adoptToken, getName, getToken } from './identity';
 import { BaseTransport } from './transport';
 
@@ -83,9 +84,8 @@ export class Socket extends BaseTransport {
 
   private open() {
     if (this.ws) return;
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const q = new URLSearchParams({ token: getToken(), name: getName() ?? '' });
-    const ws = new WebSocket(`${proto}://${location.host}/ws?${q}`);
+    const ws = new WebSocket(`${platform.serverUrl()}?${q}`);
     this.ws = ws;
     ws.binaryType = 'arraybuffer';
     ws.onmessage = (e) => lagIn(() => this.receive(e.data as string | ArrayBuffer));

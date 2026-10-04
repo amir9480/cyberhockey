@@ -5,4 +5,8 @@ interface ImportMetaEnv {
   readonly VITE_POSTHOG_KEY?: string;
   /** PostHog API host (POSTHOG_HOST at build time), e.g. https://eu.i.posthog.com. */
   readonly VITE_POSTHOG_HOST?: string;
+  /** The public site URL, no trailing slash (APP_URL at build time). */
+  readonly VITE_APP_URL: string;
+  /** Where this build is published: 'web' (the game's own site) or 'crazygames'. See src/platform. */
+  readonly VITE_PLATFORM: 'web' | 'crazygames';
 }

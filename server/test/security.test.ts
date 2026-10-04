@@ -29,9 +29,22 @@ describe('origin check', () => {
     ({ server, port } = await startServer({ appUrl: 'https://cyberhockey.example/' }));
     expect(await tryOpen(port, 'https://cyberhockey.example')).toBe('open');
     expect(await tryOpen(port, `http://localhost:${port}`)).toBe('open');
+    expect(await tryOpen(port, 'http://localhost:4173')).toBe('open'); // same host, another port: a local build preview
     expect(await tryOpen(port)).toBe('open');
     expect(await tryOpen(port, 'https://evil.example')).toBe('403');
+    expect(await tryOpen(port, 'http://localhost.evil.example')).toBe('403');
     expect(await tryOpen(port, 'null')).toBe('403');
+  });
+
+  it('lets in CrazyGames, which hosts a build of the game, and nothing posing as it', async () => {
+    let port: number;
+    ({ server, port } = await startServer({ appUrl: 'https://cyberhockey.example/' }));
+    expect(await tryOpen(port, 'https://crazygames.com')).toBe('open');
+    expect(await tryOpen(port, 'https://games.crazygames.com')).toBe('open');
+    expect(await tryOpen(port, 'https://cyber-hockey.game-files.crazygames.com')).toBe('open');
+    expect(await tryOpen(port, 'http://games.crazygames.com')).toBe('403');
+    expect(await tryOpen(port, 'https://crazygames.com.evil.example')).toBe('403');
+    expect(await tryOpen(port, 'https://evilcrazygames.com')).toBe('403');
   });
 });
 

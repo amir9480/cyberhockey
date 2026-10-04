@@ -10,6 +10,7 @@ import { Countdown } from './game/countdown';
 import { SeatNames } from './game/seatnames';
 import { Alpine, css, focusIn, setNote, show, ui, type Screen } from './ui';
 import { gameEnded, gameStarted } from './analytics';
+import { platform } from './platform';
 
 const canvas = document.getElementById('view') as HTMLCanvasElement;
 const view = new View(canvas);
@@ -251,11 +252,13 @@ const COLOR_KEY = 'airhockey.color';
 // --- single player: play / pause ---------------------------------------------
 // Playing = fullscreen, hidden cursor. Leaving fullscreen (Esc) or the pause button pauses.
 let playing = false;
-const canFullscreen = !DEBUG && !!document.documentElement.requestFullscreen;
+// Some platforms (CrazyGames) provide fullscreen themselves and don't allow the game to ask for it.
+const canFullscreen = !DEBUG && platform.fullscreen && !!document.documentElement.requestFullscreen;
 
 /** Game over: freeze play, give the cursor back and show who won. */
 function showResult(winner: number, scores: number[]) {
   const won = winner === 0;
+  if (won) platform.celebrate();
   Object.assign(ui.result, {
     open: true,
     won,
@@ -290,9 +293,11 @@ function setPlaying(on: boolean) {
   input.mouseActive = on;
   view.running = on;
   if (on) {
+    platform.gameplayStart();
     view.countdown = COUNTDOWN;
     show('none');
   } else {
+    platform.gameplayStop();
     input.release();
     view.countdown = 0;
     view.stopCinematic();
@@ -422,12 +427,14 @@ const mp: Multiplayer = new Multiplayer({
     show(s === 'menu' ? 'pause' : s === 'game' ? 'none' : s);
   },
   engage() {
+    platform.gameplayStart();
     ui.playing = true;
     input.enabled = true;
     input.mouseActive = true;
     view.running = true;
   },
   disengage() {
+    platform.gameplayStop();
     ui.playing = false;
     input.enabled = false;
     input.mouseActive = false;
@@ -452,12 +459,33 @@ function enterMulti(room: RoomRef | null, auto = false) {
   mp.enter(room, auto);
 }
 
-/** After the name: straight back into the room you were in, else the main menu. */
+/**
+ * After the name: straight into the room this page was opened for or the one you were last in; into a new private room
+ * when the platform launched the game for multiplayer; else the main menu.
+ */
 function afterName() {
   const room = savedRoom();
   if (room) enterMulti(room, true);
-  else show('home');
+  else if (platform.instantMultiplayer) {
+    ui.mode = 'mp';
+    mp.enter(null, false, true);
+  } else show('home');
 }
+
+// The platform's side: a room picked on the platform (a friend's "join"), the player signing in, its mute setting.
+platform.onJoinRoom = (room) => {
+  if (ui.mode === 'mp') mp.switchRoom(room);
+  else {
+    toMenu();
+    enterMulti(room);
+  }
+};
+platform.onNameChange = (name) => {
+  ui.nameScreen.name = name;
+  mp.rename(name);
+};
+platform.onMute = (muted) => view.sound.setMuted(muted);
+ui.ownNames = platform.ownNames;
 
 function openSettings(from: Screen) {
   ui.settings.from = from;
@@ -707,10 +735,15 @@ Alpine.data('app', () => ({
 input.enabled = false;
 if (DEBUG) Object.assign(window, { airhockey: { view, mp, ui } });
 setPlayers(parse(new URLSearchParams(location.search).get('players')));
-ui.nameScreen.name = getName() ?? '';
+// A platform that names the player never shows the name screen, not even while it starts up.
+if (!platform.ownNames) ui.screen = 'none';
 Alpine.start();
-if (getName()) afterName();
-else show('name');
+void platform.init().then(() => {
+  ui.nameScreen.name = getName() ?? '';
+  if (getName()) afterName();
+  else show('name');
+  platform.loaded();
+});
 
 // First run: pick the quality from a short live FPS test. The menu waits for it (no blur, which would skew it).
 const savedQuality = load(QUALITY_KEY) as Quality | null;

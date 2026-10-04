@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "sh -c 'trap \"kill 0\" INT TERM EXIT; vite build web --watch & tsx watch --tsconfig server/tsconfig.json server/src/index.ts & wait'",
     "build": "tsc -p web && vite build web && tsc -p server && esbuild server/src/index.ts --bundle --platform=node --format=esm --target=node20 --tsconfig=server/tsconfig.json --external:express --external:ws --outfile=server/dist/index.js",
+    "build:crazygames": "tsc -p web && VITE_PLATFORM=crazygames vite build web",
     "start": "NODE_ENV=production node server/dist/index.js",
     "typecheck": "tsc -p shared && tsc -p web && tsc -p server",
     "test": "vitest run"

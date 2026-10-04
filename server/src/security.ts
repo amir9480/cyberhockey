@@ -57,16 +57,24 @@ export function securityHeaders(appUrl: string): RequestHandler[] {
 }
 
 /**
+ * Sites that host a build of the game themselves (pnpm build:crazygames): its pages run from their domains, and still
+ * play on this server.
+ */
+const PLATFORM_ORIGINS = [/^https:\/\/([a-z0-9-]+\.)*crazygames\.com$/];
+
+/**
  * Whether a websocket upgrade may proceed: browsers always send Origin, so only pages served from this site (APP_URL,
- * or the host the request was made to, which covers LAN and localhost use) get to open the game socket. No Origin
- * means not a browser; the per-address limit covers those.
+ * or the host the request was made to, on any port, which covers LAN and localhost use, a local test of a platform
+ * build included) or a platform hosting a build of the game get to open the game socket. No Origin means not a
+ * browser; the per-address limit covers those.
  */
 export function originAllowed(req: IncomingMessage, appOrigin: string): boolean {
   const origin = req.headers.origin;
   if (!origin) return true;
   if (origin === appOrigin) return true;
+  if (PLATFORM_ORIGINS.some((re) => re.test(origin))) return true;
   try {
-    return new URL(origin).host === req.headers.host;
+    return new URL(origin).hostname === new URL(`http://${req.headers.host ?? ''}`).hostname;
   } catch {
     return false;
   }

@@ -1,4 +1,5 @@
 import { cleanName } from '@airhockey/shared/protocol';
+import { platform } from '../platform';
 
 // Temporary identity: a display name plus a random guest token. Real authentication replaces this later;
 // the server only ever sees `token` (who you are) and `name` (what others see) as separate things.
@@ -23,8 +24,9 @@ const write = (k: string, v: string) => {
 let memToken: string | null = null;
 let memName: string | null = null;
 
-/** The saved display name, or null on a first visit. */
+/** The display name: the platform's for this player, else the saved one (null on a first visit). */
 export function getName(): string | null {
+  if (platform.name) return platform.name;
   const v = memName ?? read(NAME_KEY);
   return v ? cleanName(v, '') || null : null;
 }

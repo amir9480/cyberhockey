@@ -27,8 +27,8 @@ if (enabled) {
       disable_surveys: true,
       respect_dnt: true,
     });
-    // Played on another site through an iframe (that site shows up as the referrer).
-    posthog.register({ embedded: window.top !== window.self });
+    // Played on another site through an iframe (that site shows up as the referrer), and which build (web, crazygames).
+    posthog.register({ embedded: window.top !== window.self, platform: import.meta.env.VITE_PLATFORM });
     client = posthog;
     for (const [event, props] of queued.splice(0)) posthog.capture(event, props);
   });

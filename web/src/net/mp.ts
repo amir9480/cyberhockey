@@ -3,6 +3,7 @@ import { PALETTE_SIZE, clampMalletScale, clampWinScore } from '@airhockey/shared
 import type { PlayerCount } from '@airhockey/shared/layout';
 import { PALETTE_HEX } from '../game/colors';
 import { gameEnded, gameStarted } from '../analytics';
+import { platform, type RoomRef } from '../platform';
 import { Alpine, css, focusIn, setNote, ui, type LobbyRow } from '../ui';
 import type { Countdown } from '../game/countdown';
 import type { Input } from '../game/input';
@@ -53,22 +54,12 @@ export interface MpDeps {
 const ROOM_KEY = 'airhockey.room';
 const NET_KEY = 'airhockey.net';
 
-/** A room and how it is reached. */
-export interface RoomRef {
-  kind: NetKind;
-  id: string;
-}
+export type { RoomRef };
 
-/** URL parameter holding the room id, per kind of room. */
-const URL_PARAM: Record<NetKind, string> = { server: 'room', p2p: 'p2p' };
-
-/** The room in the address bar, or the one this player was last in (to go straight back to on a fresh start). */
+/** The room this page was opened for (a link, an invite), or the one this player was last in (to go straight back to). */
 export function savedRoom(): RoomRef | null {
-  const q = new URLSearchParams(location.search);
-  for (const kind of ['server', 'p2p'] as const) {
-    const id = q.get(URL_PARAM[kind]);
-    if (id) return { kind, id };
-  }
+  const linked = platform.linkedRoom();
+  if (linked) return linked;
   try {
     const raw = localStorage.getItem(ROOM_KEY);
     if (!raw) return null;
@@ -115,6 +106,8 @@ export class Multiplayer {
   private wantedRoom: string | null = null;
   /** Rejoining the saved room on a fresh start: if it's gone, back to the start screen rather than the lobby. */
   private autoJoin = false;
+  /** Make a private room as soon as the server connection is up. */
+  private createOnOpen = false;
   private game: NetGame | null = null;
   private seats: SeatInfo[] = [];
   /** Each seat's player round trip, ms, from the server. */
@@ -144,6 +137,10 @@ export class Multiplayer {
     socket.onOpen = () => {
       setNote(ui.lobby.note, '');
       this.mode.serverOpened(this.wantedRoom);
+      if (this.createOnOpen) {
+        this.createOnOpen = false;
+        this.mode.create(false);
+      }
       socket.send({ t: 'lobby' });
     };
     socket.onClose = () => {
@@ -214,14 +211,18 @@ export class Multiplayer {
 
   // --- lifecycle -------------------------------------------------------------
 
-  /** Enter multiplayer; `room` joins that room straight away (`auto`: on a fresh start, not by the player's choice). */
-  enter(room: RoomRef | null, auto = false) {
+  /**
+   * Enter multiplayer; `room` joins that room straight away (`auto`: on a fresh start, not by the player's choice).
+   * `create`: no room given, make a new private one at once (the platform launched the game straight into multiplayer).
+   */
+  enter(room: RoomRef | null, auto = false, create = false) {
     this.open = true;
     this.reset();
     if (room) this.setKind(room.kind);
     this.wantedRoom = room?.id ?? null;
     this.autoJoin = auto && !!room;
-    setNote(ui.lobby.note, room ? 'Joining room…' : '');
+    this.createOnOpen = create && !room;
+    setNote(ui.lobby.note, room ? 'Joining room…' : this.createOnOpen ? 'Setting up your room…' : '');
     this.setScreen('lobby');
     this.socket.connect();
     this.renderServerPing();
@@ -238,8 +239,20 @@ export class Multiplayer {
     this.lobbyTicker = null;
     this.socket.close();
     this.reset();
-    this.setUrl(null);
+    this.setRoom(null);
     this.deps.exit();
+  }
+
+  /** Go to `room`, chosen from outside the game (a platform's join): from wherever multiplayer is, or isn't, now. */
+  switchRoom(room: RoomRef) {
+    if (!this.open) return this.enter(room);
+    this.mode.leave();
+    this.reset();
+    this.setKind(room.kind);
+    this.wantedRoom = room.id;
+    setNote(ui.lobby.note, 'Joining room…');
+    this.setScreen('lobby');
+    if (this.socket.connected) this.mode.join(room.id);
   }
 
   /** Forget every room and game: nothing of the last one may drive the view (`NetGame` owns its `onFrame`). */
@@ -251,6 +264,7 @@ export class Multiplayer {
     this.room = null;
     this.wantedRoom = null;
     this.autoJoin = false;
+    this.createOnOpen = false;
     this.seats = [];
     this.pings = [];
     this.showingResult = false;
@@ -278,19 +292,15 @@ export class Multiplayer {
     if (on) this.prober.want(this.p2pRooms.map((r) => r.peer));
   }
 
-  /** The room's link: `?room=` for one on the server, `?p2p=` for a P2P one. */
-  private roomUrl(room: string | null) {
-    const url = new URL(location.href);
-    url.searchParams.delete('players');
-    for (const p of Object.values(URL_PARAM)) url.searchParams.delete(p);
-    if (room) url.searchParams.set(URL_PARAM[this.mode.kind], room);
-    return url;
-  }
-
-  private setUrl(room: string | null) {
-    history.replaceState(null, '', this.roomUrl(room));
+  /**
+   * This player is now in room `m` (or none): remembered for a fresh start, and told to the platform (the address bar
+   * on the web, the room's status on CrazyGames).
+   */
+  private setRoom(m: RoomMsg | null) {
+    const ref: RoomRef | null = m ? { kind: this.mode.kind, id: m.id } : null;
+    platform.roomChanged(ref, !!m && m.members.filter((x) => x.online).length < m.cap);
     try {
-      if (room) localStorage.setItem(ROOM_KEY, JSON.stringify({ kind: this.mode.kind, id: room } satisfies RoomRef));
+      if (ref) localStorage.setItem(ROOM_KEY, JSON.stringify(ref));
       else localStorage.removeItem(ROOM_KEY);
     } catch {
       /* storage unavailable: a fresh start just won't rejoin */
@@ -358,7 +368,7 @@ export class Multiplayer {
     this.room = m;
     this.wantedRoom = m.id;
     this.autoJoin = false;
-    this.setUrl(m.id);
+    this.setRoom(m);
     this.renderRoom();
     if (this.showingResult) this.renderResultActions();
     if (this.active || this.showingResult) return;
@@ -415,6 +425,7 @@ export class Multiplayer {
     this.game = null;
     const winner = m.seats[m.winner] ?? this.seats[m.winner];
     const won = m.winner >= 0 && m.winner === mine;
+    if (won) platform.celebrate();
     const r = ui.result;
     r.title = m.winner < 0 ? 'GAME OVER' : won ? 'YOU WIN' : `${(winner?.name ?? 'PLAYER').toUpperCase()} WINS`;
     r.won = won;
@@ -449,7 +460,7 @@ export class Multiplayer {
     this.wantedRoom = null;
     this.showingResult = false;
     ui.result.open = false;
-    this.setUrl(null);
+    this.setRoom(null);
     if (reason === 'replaced' || reason === 'hostLeft' || reason === 'closed') {
       this.toast(
         reason === 'replaced' ? 'This room was opened in another tab' : reason === 'hostLeft' ? 'The host left the room' : 'The room was closed',
@@ -473,7 +484,7 @@ export class Multiplayer {
     this.wantedRoom = null;
     this.showingResult = false;
     ui.result.open = false;
-    this.setUrl(null);
+    this.setRoom(null);
     if (why === 'unreachable') {
       setNote(
         ui.lobby.note,
@@ -487,7 +498,7 @@ export class Multiplayer {
   private onError(code: string, msg: string) {
     if ((code === 'not_found' || code === 'full' || code === 'kicked' || code === 'busy') && !this.room) {
       this.wantedRoom = null;
-      this.setUrl(null);
+      this.setRoom(null);
       if (this.autoJoin) {
         this.toast(msg);
         this.exit();
@@ -616,8 +627,9 @@ export class Multiplayer {
   }
 
   copyLink() {
-    const url = this.roomUrl(this.room?.id ?? null);
-    void navigator.clipboard?.writeText(url.toString()).then(
+    if (!this.room) return;
+    const link = platform.roomLink({ kind: this.mode.kind, id: this.room.id });
+    void navigator.clipboard?.writeText(link).then(
       () => {
         ui.room.copyText = 'COPIED';
         setTimeout(() => (ui.room.copyText = 'COPY LINK'), 1500);

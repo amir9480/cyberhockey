@@ -98,6 +98,8 @@ export const ui = Alpine.reactive({
   benchmarking: false,
 
   nameScreen: { name: '', note: note() },
+  /** Players pick their own name (the platform doesn't name them). */
+  ownNames: true,
 
   sp: {
     players: 2 as PlayerCount,

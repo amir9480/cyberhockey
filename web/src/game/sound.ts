@@ -32,6 +32,8 @@ export class Sound {
   private music: HTMLAudioElement | null = null;
   /** A user gesture has called `unlock`: media may start. */
   private gestured = false;
+  /** Everything silent, whatever the volumes (the platform asked: CrazyGames' mute setting). */
+  private muted = false;
   /**
    * Every effect element started once inside a gesture (iOS only lets such elements play later): 'no', 'pending'
    * while their play() calls settle, 'yes' once all of them were allowed.
@@ -74,12 +76,18 @@ export class Sound {
    * the retries.
    */
   get unlocked(): boolean {
-    return this.primed === 'yes' && (this.musicVolume <= 0 || this.musicOk);
+    return this.primed === 'yes' && (this.muted || this.musicVolume <= 0 || this.musicOk);
   }
 
   /** Music volume, 0..1 (0 stops the track). */
   setMusicVolume(v: number) {
     this.musicVolume = clamp(v, 0, 1);
+    this.applyMusic();
+  }
+
+  /** Silence everything (true), or let the volumes apply again. */
+  setMuted(on: boolean) {
+    this.muted = on;
     this.applyMusic();
   }
 
@@ -172,7 +180,7 @@ export class Sound {
   }
 
   private play(name: Effect, gain = 1, rate = 1, minGap = 0) {
-    if (!this.gestured || this.sfxVolume <= 0) return;
+    if (!this.gestured || this.muted || this.sfxVolume <= 0) return;
     const t = now();
     if (t - (this.last.get(name) ?? -1) < minGap) return;
     this.last.set(name, t);
@@ -190,7 +198,7 @@ export class Sound {
    * gesture (`unlock`) only the volume is kept.
    */
   private applyMusic() {
-    const v = this.musicVolume;
+    const v = this.muted ? 0 : this.musicVolume;
     if (this.music) this.music.volume = v;
     if (!this.gestured) return;
     if (v > 0 && !this.music) {
