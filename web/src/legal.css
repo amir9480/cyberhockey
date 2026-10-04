@@ -28,3 +28,5 @@ li { margin-bottom: 6px; }
 strong { color: #fff; font-weight: 600; }
 a { color: #6ff; text-underline-offset: 3px; }
 code { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; color: #fff; background: rgba(160, 120, 255, 0.15); padding: 1px 5px; border-radius: 4px; }
+pre { margin: 0 0 16px; padding: 12px 14px; overflow-x: auto; border-radius: 10px; background: rgba(160, 120, 255, 0.1); border: 1px solid rgba(160, 120, 255, 0.3); }
+pre code { padding: 0; background: none; font-size: 13px; line-height: 1.5; }
