@@ -23,6 +23,8 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true # the music and sound effects are Git LFS files: without this the build ships pointer stubs
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
