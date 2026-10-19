@@ -13,10 +13,12 @@ export interface RoomRef {
  * `<!-- only:web -->` regions in index.html, see vite.config.ts.
  *
  * One is chosen at build time (`VITE_PLATFORM`, see `index.ts`): `WebPlatform` for the game's own site,
- * `CrazyGamesPlatform` for the CrazyGames build.
+ * `CrazyGamesPlatform` for the CrazyGames build, `SinglePlayerPlatform` for the single player one.
  */
 export interface Platform {
-  readonly id: 'web' | 'crazygames';
+  readonly id: 'web' | 'crazygames' | 'singleplayer';
+  /** The build has online multiplayer (the single player build has none: no menu entry, no rooms, no server). */
+  readonly multiplayer: boolean;
   /** The game may switch to fullscreen itself (the platform may forbid it and offer its own). */
   readonly fullscreen: boolean;
   /** Players pick their own display name; otherwise `name` (the platform account's) is used. */

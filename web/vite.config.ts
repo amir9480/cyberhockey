@@ -1,9 +1,11 @@
 import { fileURLToPath } from 'node:url';
 import { defineConfig, type Plugin } from 'vite';
 
-// Which platform the build is for (src/platform): 'web' (`pnpm build`) or 'crazygames' (`pnpm build:crazygames`).
+// Which platform the build is for (src/platform): 'web' (`pnpm build`), 'crazygames' (`pnpm build:crazygames`) or
+// 'singleplayer' (`pnpm build:singleplayer`: no multiplayer, static files that run from any folder, e.g. GitHub Pages).
 process.env.VITE_PLATFORM ||= 'web';
 const crazyGames = process.env.VITE_PLATFORM === 'crazygames';
+const singlePlayer = process.env.VITE_PLATFORM === 'singleplayer';
 // The CrazyGames build runs from CrazyGames' CDN and reaches the game server at APP_URL: it defaults to the live site,
 // never to localhost (set APP_URL to test it against a local server).
 const CRAZYGAMES_APP_URL = 'https://cyberhockey.fetchrover.app';
@@ -17,15 +19,15 @@ process.env.VITE_POSTHOG_KEY = crazyGames ? '' : process.env.VITE_POSTHOG_KEY ||
 process.env.VITE_POSTHOG_HOST ||= process.env.POSTHOG_HOST ?? '';
 
 /**
- * Markup for one platform only: `<!-- only:web -->…<!-- /only:web -->` (or `only:crazygames`) regions in the HTML are
- * kept in that platform's build and cut from every other one.
+ * Markup for some platforms only: `<!-- only:web -->…<!-- /only:web -->` (or `only:crazygames`, or a comma list such as
+ * `only:web,singleplayer`) regions in the HTML are kept in those platforms' builds and cut from every other one.
  */
 function platformHtml(platform: string): Plugin {
   return {
     name: 'platform-html',
     transformIndexHtml(html) {
-      return html.replace(/[ \t]*<!-- only:([\w-]+)\b[^>]*-->([\s\S]*?)<!-- \/only:\1 -->\n?/g, (_m, p: string, body: string) =>
-        p === platform ? body.replace(/^\n/, '').replace(/[ \t]*$/, '') : '',
+      return html.replace(/[ \t]*<!-- only:([\w,-]+)\b[^>]*-->([\s\S]*?)<!-- \/only:\1 -->\n?/g, (_m, p: string, body: string) =>
+        p.split(',').includes(platform) ? body.replace(/^\n/, '').replace(/[ \t]*$/, '') : '',
       );
     },
   };
@@ -34,10 +36,10 @@ function platformHtml(platform: string): Plugin {
 export default defineConfig({
   plugins: [platformHtml(process.env.VITE_PLATFORM ?? 'web')],
   resolve: { alias: { '@airhockey/shared': fileURLToPath(new URL('../shared/src', import.meta.url)) } },
-  // CrazyGames serves the files from a folder on its CDN: every path relative to the page.
-  base: crazyGames ? './' : '/',
+  // CrazyGames serves the files from a folder on its CDN, GitHub Pages from /<repo>/: every path relative to the page.
+  base: crazyGames || singlePlayer ? './' : '/',
   build: {
-    outDir: crazyGames ? 'dist-crazygames' : 'dist',
+    outDir: crazyGames ? 'dist-crazygames' : singlePlayer ? 'dist-singleplayer' : 'dist',
     // The game, plus the privacy policy and terms pages (privacy.html, terms.html). CrazyGames: the game alone (it
     // allows no links to other pages, and its own site has the legal ones).
     rolldownOptions: {

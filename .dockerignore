@@ -1,6 +1,7 @@
 node_modules
 web/dist
 web/dist-crazygames
+web/dist-singleplayer
 server/dist
 .git
 *.png

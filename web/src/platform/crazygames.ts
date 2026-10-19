@@ -115,6 +115,7 @@ function guestName(): string {
 
 export class CrazyGamesPlatform implements Platform {
   readonly id = 'crazygames';
+  readonly multiplayer = true;
   readonly fullscreen = false;
   readonly ownNames = false;
   name: string | null = null;

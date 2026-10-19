@@ -461,10 +461,10 @@ function enterMulti(room: RoomRef | null, auto = false) {
 
 /**
  * After the name: straight into the room this page was opened for or the one you were last in; into a new private room
- * when the platform launched the game for multiplayer; else the main menu.
+ * when the platform launched the game for multiplayer; else the main menu (a build without multiplayer: always).
  */
 function afterName() {
-  const room = savedRoom();
+  const room = platform.multiplayer ? savedRoom() : null;
   if (room) enterMulti(room, true);
   else if (platform.instantMultiplayer) {
     ui.mode = 'mp';

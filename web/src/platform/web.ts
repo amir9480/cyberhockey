@@ -9,7 +9,8 @@ const URL_PARAM: Record<NetKind, string> = { server: 'room', p2p: 'p2p' };
  * the address bar), and the server is the one that served the page.
  */
 export class WebPlatform implements Platform {
-  readonly id = 'web';
+  readonly id: Platform['id'] = 'web';
+  readonly multiplayer: boolean = true;
   readonly fullscreen = true;
   readonly ownNames = true;
   readonly name = null;

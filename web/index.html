@@ -146,11 +146,13 @@
       <div class="menu">
         <h1 class="title">CYBER HOCKEY</h1>
         <button class="primary" type="button" @click="goSingle()">SINGLE PLAYER</button>
+        <!-- only:web,crazygames: no multiplayer in the single player build -->
         <button class="primary" type="button" @click="goMulti()">MULTI PLAYER</button>
+        <!-- /only:web,crazygames -->
         <button class="ghost" type="button" @click="openSettings('home')">SETTINGS</button>
       </div>
       <footer class="links">
-        <!-- only:web: links to other sites (CrazyGames allows none, so its build leaves them out) -->
+        <!-- only:web,singleplayer: links to other sites (CrazyGames allows none, so its build leaves them out) -->
         <a class="follow" href="https://x.com/amirdev1997" target="_blank" rel="noopener noreferrer">
           <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M18.9 1.2h3.7l-8 9.2L24 22.8h-7.4l-5.8-7.6-6.6 7.6H.5l8.6-9.8L0 1.2h7.6l5.2 6.9 6.1-6.9Zm-1.3 19.4h2L6.5 3.3H4.3l13.3 17.3Z"/></svg>
           FOLLOW ME ON X
@@ -160,10 +162,10 @@
           from <a href="https://pixabay.com/music//?utm_source=link-attribution&utm_medium=referral&utm_campaign=music&utm_content=563935" target="_blank" rel="noopener noreferrer">Pixabay</a>
         </span>
         <span class="sep">
-          <a href="/privacy.html">PRIVACY</a>
-          <a href="/terms.html">TERMS</a>
+          <a href="privacy.html">PRIVACY</a>
+          <a href="terms.html">TERMS</a>
         </span>
-        <!-- /only:web -->
+        <!-- /only:web,singleplayer -->
         <!-- only:crazygames: the credit the music's license asks for, as plain text -->
         <span class="credit">Music by OctoSound from Pixabay</span>
         <!-- /only:crazygames -->
