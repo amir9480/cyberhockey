@@ -16,7 +16,7 @@ export interface RoomRef {
  * `CrazyGamesPlatform` for the CrazyGames build, `SinglePlayerPlatform` for the single player one.
  */
 export interface Platform {
-  readonly id: 'web' | 'crazygames' | 'singleplayer';
+  readonly id: 'web' | 'crazygames' | 'singleplayer' | 'itch';
   /** The build has online multiplayer (the single player build has none: no menu entry, no rooms, no server). */
   readonly multiplayer: boolean;
   /** The game may switch to fullscreen itself (the platform may forbid it and offer its own). */

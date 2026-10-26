@@ -2,4 +2,6 @@ node_modules/
 web/dist/
 web/dist-crazygames/
 web/dist-singleplayer/
+web/dist-itch/
+web/cyber-hockey-itch.zip
 server/dist/

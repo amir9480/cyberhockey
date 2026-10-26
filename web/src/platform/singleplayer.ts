@@ -1,3 +1,4 @@
+import type { Platform } from './types';
 import { WebPlatform } from './web';
 
 /**
@@ -5,7 +6,7 @@ import { WebPlatform } from './web';
  * is no server to talk to, so no room is ever linked to or joined.
  */
 export class SinglePlayerPlatform extends WebPlatform {
-  override readonly id = 'singleplayer';
+  override readonly id: Platform['id'] = 'singleplayer';
   override readonly multiplayer = false;
 
   override linkedRoom() {

@@ -2,6 +2,7 @@
   "name": "airhockey",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "packageManager": "pnpm@10.11.1",
   "scripts": {
@@ -9,6 +10,7 @@
     "build": "tsc -p web && vite build web && tsc -p server && esbuild server/src/index.ts --bundle --platform=node --format=esm --target=node20 --tsconfig=server/tsconfig.json --external:express --external:ws --outfile=server/dist/index.js",
     "build:crazygames": "tsc -p web && VITE_PLATFORM=crazygames vite build web",
     "build:singleplayer": "tsc -p web && VITE_PLATFORM=singleplayer vite build web",
+    "build:itch": "tsc -p web && VITE_PLATFORM=itch vite build web && rm -f web/cyber-hockey-itch.zip && (cd web/dist-itch && zip -qr ../cyber-hockey-itch.zip .)",
     "start": "NODE_ENV=production node server/dist/index.js",
     "typecheck": "tsc -p shared && tsc -p web && tsc -p server",
     "test": "vitest run"

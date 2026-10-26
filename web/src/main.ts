@@ -68,7 +68,11 @@ function syncPlayersUrl() {
   const url = new URL(location.href);
   url.searchParams.set('players', String(ui.sp.players));
   url.searchParams.delete('room');
-  history.replaceState(null, '', url);
+  try {
+    history.replaceState(null, '', url);
+  } catch {
+    /* embedded frames may not rewrite their address */
+  }
 }
 
 addEventListener('keydown', (e) => {
